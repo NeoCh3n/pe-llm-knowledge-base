@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import List
 
 from backend.config import get_settings
 
@@ -13,129 +13,197 @@ class ParsedChunk:
     page_number: int
     chunk_index: int
     source: str
+    section: str | None = None
 
 
-def _export_markdown(file_path: Path) -> str:
+# ---------------------------------------------------------------------------
+# Structured element export — preserves real page numbers via docling provenance
+# ---------------------------------------------------------------------------
+
+def _export_elements(file_path: Path) -> List[tuple[int, str | None, str]]:
     """
-    Use docling to convert the document to Markdown.
-    Tables stay intact because docling preserves Markdown table structures.
+    Use docling's structured document model to extract elements with their
+    real page numbers.
+
+    Returns a list of (page_number, section_header, markdown_content) tuples,
+    one per logical document element (text block, heading, table, list item).
+
+    Tables are exported as Markdown table strings and later kept as atomic
+    chunks by _chunk_elements().
     """
     try:
         from docling.document_converter import DocumentConverter
-    except Exception as exc:
+    except ImportError as exc:
         raise RuntimeError(
-            "docling is required for parsing documents. Install the extras in requirements.txt."
+            "docling is required for parsing documents. "
+            "Install the extras in requirements.txt."
         ) from exc
 
     converter = DocumentConverter()
     result = converter.convert(str(file_path))
+    doc = result.document
 
-    if hasattr(result, "document") and result.document is not None:
-        return result.document.export_to_markdown()
+    if doc is None:
+        raise RuntimeError("docling returned no document for file: %s" % file_path)
 
-    raise RuntimeError("Failed to export document to Markdown via docling")
+    elements: List[tuple[int, str | None, str]] = []
+    current_section: str | None = None
+
+    for item, _level in doc.iterate_items():
+        # --- page number from provenance --------------------------------
+        page_no: int = 1
+        prov = getattr(item, "prov", None)
+        if prov:
+            try:
+                page_no = int(prov[0].page_no)
+            except (AttributeError, IndexError, TypeError, ValueError):
+                page_no = 1
+
+        # --- export element to markdown ---------------------------------
+        try:
+            content: str = item.export_to_markdown()
+        except Exception:
+            # fallback for element types that don't support markdown export
+            content = str(getattr(item, "text", "") or "")
+
+        content = content.strip()
+        if not content:
+            continue
+
+        # --- track section headers for chunk metadata -------------------
+        label = str(getattr(item, "label", "")).lower()
+        if "section_header" in label or label in ("title",):
+            current_section = content.lstrip("#").strip()
+
+        elements.append((page_no, current_section, content))
+
+    return elements
 
 
-def _split_blocks(markdown_text: str) -> List[str]:
+# ---------------------------------------------------------------------------
+# Chunking — groups elements respecting max_len, keeps tables atomic
+# ---------------------------------------------------------------------------
+
+
+def _is_table_content(content: str) -> bool:
+    """Return True if content looks like a Markdown table (starts with '|')."""
+    first_line = content.lstrip().split("\n", 1)[0]
+    return first_line.startswith("|")
+
+
+def _chunk_elements(
+    elements: List[tuple[int, str | None, str]],
+    max_len: int,
+    overlap: int,
+) -> List[ParsedChunk]:
     """
-    Split markdown into logical blocks without breaking tables.
-    Tables are detected by the pipe/--- pattern and kept together.
+    Group (page_number, section, content) elements into ParsedChunk objects.
+
+    Rules:
+    - Target chunk size is max_len characters.
+    - Tables (detected by leading '|') are always emitted as their own chunk,
+      never split or merged with adjacent text.
+    - Overlap carryover is plain text; it is prepended to the next chunk's
+      buffer so context is not lost at boundaries.
+    - page_number is taken from the first element in each chunk.
     """
-    blocks: List[str] = []
-    current: List[str] = []
-    in_table = False
+    chunks: List[ParsedChunk] = []
 
-    for line in markdown_text.splitlines():
-        stripped = line.strip()
-        is_table_line = "|" in stripped and "---" in stripped or stripped.startswith("|")
+    buf_parts: List[str] = []
+    buf_pages: List[int] = []
+    buf_sections: List[str | None] = []
+    current_len: int = 0
 
-        if stripped.startswith("# "):
-            if current:
-                blocks.append("\n".join(current).strip())
-                current = []
-            current.append(line)
-            in_table = False
-            continue
-
-        if is_table_line:
-            in_table = True
-            current.append(line)
-            continue
-
-        if stripped == "" and not in_table:
-            if current:
-                blocks.append("\n".join(current).strip())
-                current = []
-            continue
-
-        if stripped == "" and in_table:
-            current.append(line)
-            continue
-
-        current.append(line)
-        if in_table and not is_table_line:
-            in_table = False
-
-    if current:
-        blocks.append("\n".join(current).strip())
-
-    return [b for b in blocks if b]
-
-
-def _chunk_blocks(blocks: Iterable[str]) -> List[str]:
-    chunks: List[str] = []
-    buffer: List[str] = []
-    current_len = 0
-    max_len = settings.chunk_size
-    overlap = settings.chunk_overlap
-
-    for block in blocks:
-        block_len = len(block)
-
-        if current_len + block_len <= max_len:
-            buffer.append(block)
-            current_len += block_len
-            continue
-
-        if buffer:
-            chunks.append("\n\n".join(buffer))
-            # start next chunk with overlap for continuity
-            overlap_text = ("\n\n".join(buffer))[-overlap:] if overlap > 0 else ""
-            buffer = [overlap_text, block] if overlap_text else [block]
-            current_len = sum(len(part) for part in buffer)
-        else:
-            # extremely large block (e.g., huge table) - force add
-            chunks.append(block)
-            current_len = 0
-            buffer = []
-
-    if buffer:
-        chunks.append("\n\n".join(buffer))
-
-    return chunks
-
-
-def parse_and_chunk(file_path: str | Path) -> List[ParsedChunk]:
-    """
-    Parse a document into Markdown and split into RAG-friendly chunks.
-
-    Markdown export preserves tables; chunking keeps tables intact and
-    maintains some overlap to reduce context loss.
-    """
-    path = Path(file_path)
-    markdown_text = _export_markdown(path)
-    blocks = _split_blocks(markdown_text)
-    chunk_bodies = _chunk_blocks(blocks)
-
-    parsed_chunks: List[ParsedChunk] = []
-    for idx, chunk in enumerate(chunk_bodies):
-        parsed_chunks.append(
+    def _flush() -> None:
+        if not buf_parts:
+            return
+        chunks.append(
             ParsedChunk(
-                content=chunk,
-                page_number=1,  # docling markdown currently does not expose per-page numbers
-                chunk_index=idx,
-                source=str(path.name),
+                content="\n\n".join(buf_parts),
+                page_number=buf_pages[0],
+                chunk_index=len(chunks),
+                source="",  # filled in by caller
+                section=next((s for s in buf_sections if s is not None), None),
             )
         )
 
-    return parsed_chunks
+    for page_no, section, content in elements:
+        content_len = len(content)
+
+        if _is_table_content(content):
+            # Tables are atomic: flush current buffer, emit table alone.
+            _flush()
+            buf_parts.clear()
+            buf_pages.clear()
+            buf_sections.clear()
+            current_len = 0
+
+            chunks.append(
+                ParsedChunk(
+                    content=content,
+                    page_number=page_no,
+                    chunk_index=len(chunks),
+                    source="",
+                    section=section,
+                )
+            )
+            continue
+
+        if current_len + content_len > max_len and buf_parts:
+            # Flush and start next buffer, optionally carrying overlap.
+            prev_full = "\n\n".join(buf_parts)
+            prev_page = buf_pages[-1]
+            prev_section = next((s for s in reversed(buf_sections) if s is not None), None)
+
+            _flush()
+            buf_parts.clear()
+            buf_pages.clear()
+            buf_sections.clear()
+            current_len = 0
+
+            if overlap > 0:
+                overlap_text = prev_full[-overlap:]
+                buf_parts.append(overlap_text)
+                buf_pages.append(prev_page)
+                buf_sections.append(prev_section)
+                current_len += len(overlap_text)
+
+        buf_parts.append(content)
+        buf_pages.append(page_no)
+        buf_sections.append(section)
+        current_len += content_len
+
+    _flush()
+    return chunks
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def parse_and_chunk(file_path: str | Path) -> List[ParsedChunk]:
+    """
+    Parse a document and split it into RAG-friendly chunks with real page numbers.
+
+    Uses docling's structured element iteration so that page provenance is
+    preserved end-to-end. Tables are kept in single chunks. Section headers
+    are tracked as metadata.
+
+    Returns a list of ParsedChunk objects ready for vector embedding and
+    SQLite storage.
+    """
+    path = Path(file_path)
+    elements = _export_elements(path)
+    chunks = _chunk_elements(
+        elements,
+        max_len=settings.chunk_size,
+        overlap=settings.chunk_overlap,
+    )
+    # Back-fill source field and re-index chunk_index (chunk_index is set
+    # incrementally inside _chunk_elements, but make it explicit here).
+    for idx, chunk in enumerate(chunks):
+        chunk.source = path.name
+        chunk.chunk_index = idx
+
+    return chunks
+
