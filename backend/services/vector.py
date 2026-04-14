@@ -43,16 +43,30 @@ class QdrantVectorStore:
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
+        """Create the Qdrant collection if it does not already exist.
+
+        Uses create_collection (non-destructive) rather than recreate_collection
+        so that a service restart never wipes existing vectors.
+        """
         try:
             self.client.get_collection(settings.qdrant_collection)
+            return  # already exists — nothing to do
         except Exception:
-            self.client.recreate_collection(
+            pass  # collection not found — create it below
+
+        try:
+            self.client.create_collection(
                 collection_name=settings.qdrant_collection,
                 vectors_config=rest.VectorParams(
                     size=settings.embedding_dim,
                     distance=rest.Distance.COSINE,
                 ),
             )
+        except Exception as exc:
+            # Tolerate race condition where another worker created it first
+            if "already exists" in str(exc).lower():
+                return
+            raise
 
     def upsert_chunks(
         self,

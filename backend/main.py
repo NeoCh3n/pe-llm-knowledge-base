@@ -1,10 +1,11 @@
 import json
 import hashlib
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -20,38 +21,42 @@ from backend.models import (
     Document,
     DocumentProvenance,
     RetrievalTrace,
-    SkillRecord,
     WorkflowRun,
 )
-from backend.services.analytics import DuckDBAnalyticsStore
 from backend.services.parser import ParsedChunk, parse_and_chunk
-from backend.services.connectors import scan_local_directory, to_payload
-from backend.services.graph import Neo4jGraphStore
 from backend.services.precedent import find_precedents, summarize_precedents
 from backend.services.rag import generate_answer
-from backend.services.semantic_memory import MemPalaceStore
-from backend.services.skills import SkillManager
 from backend.services.vector import QdrantVectorStore
 from backend.services.workspace import WorkspaceManager
 from backend.services.workflow import run_ic_workflow
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
+
 app = FastAPI(title="PE Local RAG API", version="0.1.0")
 
+# ---------------------------------------------------------------------------
+# CORS — local dev only; add your deploy origin before any cloud deployment
+# ---------------------------------------------------------------------------
+_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=False,   # False: no cookies/auth headers cross-origin
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
+# ---------------------------------------------------------------------------
+# Singletons — initialized once at startup via app.state
+# ---------------------------------------------------------------------------
 vector_store: QdrantVectorStore | None = None
-graph_store: Neo4jGraphStore | None = None
-analytics_store: DuckDBAnalyticsStore | None = None
 workspace_manager: WorkspaceManager | None = None
-semantic_memory_store: MemPalaceStore | None = None
-skill_manager: SkillManager | None = None
 
 
 def get_vector_store() -> QdrantVectorStore:
@@ -61,13 +66,6 @@ def get_vector_store() -> QdrantVectorStore:
     return vector_store
 
 
-def get_graph_store() -> Neo4jGraphStore:
-    global graph_store
-    if graph_store is None:
-        graph_store = Neo4jGraphStore()
-    return graph_store
-
-
 def get_workspace_manager() -> WorkspaceManager:
     global workspace_manager
     if workspace_manager is None:
@@ -75,26 +73,9 @@ def get_workspace_manager() -> WorkspaceManager:
     return workspace_manager
 
 
-def get_analytics_store() -> DuckDBAnalyticsStore:
-    global analytics_store
-    if analytics_store is None:
-        analytics_store = DuckDBAnalyticsStore()
-    return analytics_store
-
-
-def get_semantic_memory_store() -> MemPalaceStore:
-    global semantic_memory_store
-    if semantic_memory_store is None:
-        semantic_memory_store = MemPalaceStore(get_workspace_manager())
-    return semantic_memory_store
-
-
-def get_skill_manager() -> SkillManager:
-    global skill_manager
-    if skill_manager is None:
-        skill_manager = SkillManager(get_workspace_manager())
-    return skill_manager
-
+# ---------------------------------------------------------------------------
+# Pydantic schemas
+# ---------------------------------------------------------------------------
 
 class DocumentOut(BaseModel):
     id: str
@@ -103,9 +84,16 @@ class DocumentOut(BaseModel):
     tags: list[str]
     category: str
     deal_outcome: str | None
+    status: str
 
     class Config:
         from_attributes = True
+
+
+class DocumentStatusOut(BaseModel):
+    id: str
+    status: str
+    status_error: str | None
 
 
 class DealOut(BaseModel):
@@ -179,6 +167,10 @@ class WorkflowRequest(BaseModel):
     deal_outcomes: list[str] | None = None
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _hash_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
@@ -198,11 +190,9 @@ def _normalize_json_list(raw_value: str | None) -> list[str]:
 def _link_document_to_deal(db: Session, document_id: str, deal_id: str | None) -> None:
     if not deal_id:
         return
-
     deal = db.query(Deal).filter(Deal.id == deal_id).first()
     if deal is None:
         raise HTTPException(status_code=400, detail=f"Unknown deal_id: {deal_id}")
-
     db.add(DealDocumentLink(deal_id=deal_id, document_id=document_id, relation_type="evidence"))
 
 
@@ -235,29 +225,110 @@ def _build_retrieval_trace_payload(retrieved: list) -> list[dict]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Background ingestion task
+# ---------------------------------------------------------------------------
+
+def _ingest_document(
+    document_id: str,
+    file_location: Path,
+    filename: str,
+    deal_id: str | None,
+    content: bytes,
+    metadata: dict,
+) -> None:
+    """Parse, embed, and index a document. Runs in a BackgroundTask."""
+    from backend.database import SessionLocal  # avoid circular at module level
+
+    db = SessionLocal()
+    try:
+        # Parse
+        chunks = parse_and_chunk(file_location)
+
+        # Write parsed artifacts
+        parsed_artifacts = get_workspace_manager().write_parsed_artifacts(
+            document_id, filename, chunks, deal_id=deal_id
+        )
+
+        # Store provenance + chunks in SQLite
+        db.add(
+            DocumentProvenance(
+                document_id=document_id,
+                sha256=_hash_bytes(content),
+                source_path=str(file_location),
+                document_type=metadata.get("document_type"),
+                language=metadata.get("language"),
+                metadata_json={**metadata.get("extra", {}), **parsed_artifacts},
+            )
+        )
+        _store_chunks(db, document_id, chunks)
+        db.commit()
+
+        # Embed + upsert to Qdrant — if this fails, document stays "processing" → "failed"
+        get_vector_store().upsert_chunks(
+            chunks,
+            document_id,
+            filename,
+            metadata={
+                "category": metadata.get("category"),
+                "deal_outcome": metadata.get("deal_outcome"),
+                "deal_id": deal_id,
+            },
+        )
+
+        # Mark ready
+        doc = db.query(Document).filter(Document.id == document_id).first()
+        if doc:
+            doc.status = "ready"
+            db.commit()
+
+        logger.info("Ingestion complete: document_id=%s chunks=%d", document_id, len(chunks))
+
+    except Exception as exc:
+        logger.exception("Ingestion failed: document_id=%s error=%s", document_id, exc)
+        try:
+            doc = db.query(Document).filter(Document.id == document_id).first()
+            if doc:
+                doc.status = "failed"
+                doc.status_error = str(exc)
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
-    get_workspace_manager()
-    get_analytics_store()
     get_vector_store()
-    get_graph_store()
+    get_workspace_manager()
 
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.get("/health")
 def health() -> dict:
-    return {
-        "status": "ok",
-        "workspace": get_workspace_manager().summary(),
-        "duckdb": get_analytics_store().health(),
-        "graph": get_graph_store().health(),
-    }
+    return {"status": "ok"}
 
 
 @app.get("/documents", response_model=List[DocumentOut])
 def list_documents(db: Session = Depends(get_db)):
-    documents = db.query(Document).order_by(Document.upload_timestamp.desc()).all()
-    return documents
+    return db.query(Document).order_by(Document.upload_timestamp.desc()).all()
+
+
+@app.get("/documents/{document_id}/status", response_model=DocumentStatusOut)
+def document_status(document_id: str, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return DocumentStatusOut(id=doc.id, status=doc.status, status_error=doc.status_error)
 
 
 @app.delete("/documents/{document_id}")
@@ -266,15 +337,19 @@ def delete_document(document_id: str, db: Session = Depends(get_db)):
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    # Vector store deletion — fail loudly so orphaned vectors are visible
     try:
         get_vector_store().delete_document(document_id)
-    except Exception:
-        pass
-    try:
-        get_analytics_store().delete_document(document_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "Qdrant delete failed for document_id=%s: %s — proceeding with DB delete",
+            document_id,
+            exc,
+        )
+        # Don't swallow silently; surface in response but continue DB cleanup
+        # so the document doesn't get stuck in an undeletable state.
 
+    # File cleanup via provenance
     provenance = document.provenance
     if provenance:
         source_path = Path(provenance.source_path)
@@ -288,6 +363,14 @@ def delete_document(document_id: str, db: Session = Depends(get_db)):
                 if artifact_path.exists():
                     artifact_path.unlink()
 
+    db.add(
+        AuditLog(
+            entity_type="document",
+            entity_id=document_id,
+            action="deleted",
+            payload_json={"filename": document.filename},
+        )
+    )
     db.delete(document)
     db.commit()
     return {"status": "deleted", "document_id": document_id}
@@ -307,17 +390,9 @@ def create_deal(payload: DealCreate, db: Session = Depends(get_db)):
     return deal
 
 
-@app.get("/connectors/local")
-def list_local_connector_documents(root: str | None = None):
-    scan_root = root or settings.connectors_root
-    return {
-        "root": scan_root,
-        "documents": to_payload(scan_local_directory(scan_root)),
-    }
-
-
 @app.post("/upload", response_model=DocumentOut)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     tags: str = Form("[]"),
     category: str = Form("other"),
@@ -329,94 +404,67 @@ async def upload_document(
     db: Session = Depends(get_db),
 ):
     parsed_tags = _normalize_json_list(tags)
-    parsed_metadata = {}
+    extra_metadata: dict = {}
     if metadata_json:
         try:
-            parsed_metadata = json.loads(metadata_json)
+            extra_metadata = json.loads(metadata_json)
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid metadata_json: {exc}") from exc
 
     content = await file.read()
+
+    # Create document record immediately with status="processing"
     document = Document(
         filename=file.filename,
         tags=parsed_tags,
         category=category,
         deal_outcome=deal_outcome,
+        status="processing",
     )
     db.add(document)
     db.commit()
     db.refresh(document)
 
-    file_location = get_workspace_manager().store_raw_document(
-        document.id,
-        file.filename,
-        content,
-        deal_id=deal_id,
-    )
-
+    # Link to deal (validates deal_id exists)
     try:
-        chunks = parse_and_chunk(file_location)
-    except Exception as exc:
+        _link_document_to_deal(db, document.id, deal_id)
+        db.commit()
+    except HTTPException:
         db.delete(document)
         db.commit()
-        if file_location.exists():
-            file_location.unlink()
-        raise HTTPException(status_code=400, detail=f"Parsing failed: {exc}") from exc
+        raise
 
-    parsed_artifacts = get_workspace_manager().write_parsed_artifacts(
-        document.id,
-        document.filename,
-        chunks,
-        deal_id=deal_id,
+    # Save raw file to workspace
+    file_location = get_workspace_manager().store_raw_document(
+        document.id, file.filename, content, deal_id=deal_id
     )
 
-    db.add(
-        DocumentProvenance(
-            document_id=document.id,
-            sha256=_hash_bytes(content),
-            source_path=str(file_location),
-            document_type=document_type,
-            language=language,
-            metadata_json={**parsed_metadata, **parsed_artifacts},
-        )
-    )
-    _store_chunks(db, document.id, chunks)
-    _link_document_to_deal(db, document.id, deal_id)
     db.add(
         AuditLog(
             entity_type="document",
             entity_id=document.id,
             action="uploaded",
-            payload_json={
-                "filename": document.filename,
-                "deal_id": deal_id,
-                "category": category,
-                "parsed_artifacts": parsed_artifacts,
-            },
+            payload_json={"filename": document.filename, "deal_id": deal_id, "category": category},
         )
     )
     db.commit()
 
-    try:
-        get_vector_store().upsert_chunks(
-            chunks,
-            document.id,
-            document.filename,
-            metadata={
-                "category": document.category,
-                "deal_outcome": document.deal_outcome,
-                "deal_id": deal_id,
-            },
-        )
-        get_analytics_store().replace_document_chunks(
-            document.id,
-            document.filename,
-            deal_id,
-            str(file_location),
-            chunks,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Vector upsert failed: {exc}") from exc
+    # Kick off async ingestion — returns immediately to client
+    background_tasks.add_task(
+        _ingest_document,
+        document_id=document.id,
+        file_location=file_location,
+        filename=file.filename,
+        deal_id=deal_id,
+        content=content,
+        metadata={
+            "category": category,
+            "deal_outcome": deal_outcome,
+            "document_type": document_type,
+            "language": language,
+            "extra": extra_metadata,
+        },
+    )
 
     return document
 
@@ -494,96 +542,27 @@ def workflow_run(request: WorkflowRequest, db: Session = Depends(get_db)):
         prompt_version=payload.get("prompt_version"),
     )
     db.add(workflow)
-    db.flush()
-
-    report_path = get_workspace_manager().write_workflow_output(
-        workflow.id,
-        request.deal_id,
-        "IC Workflow Output",
-        payload,
-    )
-    get_analytics_store().log_analysis_run(workflow.id, request.deal_id, request.query, str(report_path))
-
-    summary = "\n".join(
-        [
-            payload.get("draft_answer", "No answer"),
-            "",
-            "Risk gaps:",
-            *[f"- {item}" for item in payload.get("risk_gaps", [])],
-        ]
-    ).strip()
-    postmortem_path = get_workspace_manager().write_postmortem(
-        workflow.id,
-        request.deal_id,
-        summary,
-        {"query": request.query, "report_path": str(report_path)},
-    )
-    memory = get_semantic_memory_store().write_summary(
-        db,
-        request.deal_id,
-        workflow.id,
-        title=f"Workflow summary for {request.query[:80]}",
-        summary=summary,
-        evidence=payload.get("draft_sources", []),
-    )
-    skill_name, skill_path = get_skill_manager().create_candidate(workflow.id, request.query, payload)
-    db.add(
-        SkillRecord(
-            name=skill_name,
-            stage="candidate",
-            description=f"Generated from workflow {workflow.id}",
-            path=skill_path,
-            source_workflow_id=workflow.id,
-        )
-    )
     db.add(
         AuditLog(
             entity_type="workflow_run",
-            entity_id=workflow.id,
+            entity_id="pending",  # filled after flush
             action="completed",
-            payload_json={
-                "report_path": str(report_path),
-                "postmortem_path": str(postmortem_path),
-                "semantic_memory_id": memory.id,
-                "skill_path": skill_path,
-            },
+            payload_json={"query": request.query, "deal_id": request.deal_id},
         )
     )
-    workflow.output_json = {
-        **payload,
-        "artifacts": {
-            "report_path": str(report_path),
-            "postmortem_path": str(postmortem_path),
-            "skill_path": skill_path,
-            "semantic_memory_id": memory.id,
-        },
-    }
+    db.flush()
     db.commit()
     db.refresh(workflow)
+
+    report_path = get_workspace_manager().write_workflow_output(
+        workflow.id, request.deal_id, "IC Workflow Output", payload
+    )
+
     return {
         "workflow_id": workflow.id,
-        **workflow.output_json,
+        **payload,
+        "artifacts": {"report_path": str(report_path)},
     }
-
-
-@app.get("/skills")
-def list_skills(stage: str | None = None, db: Session = Depends(get_db)):
-    query = db.query(SkillRecord)
-    if stage:
-        query = query.filter(SkillRecord.stage == stage)
-    skills = query.order_by(SkillRecord.updated_at.desc()).all()
-    return [
-        {
-            "id": skill.id,
-            "name": skill.name,
-            "stage": skill.stage,
-            "description": skill.description,
-            "path": skill.path,
-            "source_workflow_id": skill.source_workflow_id,
-            "updated_at": skill.updated_at,
-        }
-        for skill in skills
-    ]
 
 
 @app.get("/workflow/runs")
