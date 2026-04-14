@@ -7,15 +7,18 @@ from backend.config import get_settings
 from backend.services.vector import ScoredChunk
 
 settings = get_settings()
+PROMPT_VERSION = "pe_ic_copilot_v1"
 
 
 SYSTEM_PROMPT = dedent(
     """
-    You are a financial analyst assistant. Use ONLY the provided context to answer.
+    You are a private equity research and IC copilot. Use ONLY the provided context to answer.
+    - Treat the task as evidence-grounded decision support, not autonomous decision-making.
     - When you reference data, always cite the Source Document and Page Number.
     - If tables are present in the context, keep them as Markdown tables in the answer.
-    - If you perform calculations (e.g., CAGR, sums), show the math step-by-step using the numbers from the context.
-    - If the answer cannot be found in the context, say you do not have enough information.
+    - If you perform calculations (e.g., CAGR, sums, ratios), show the math step-by-step using only numbers from the context.
+    - If evidence is insufficient or conflicting, say so explicitly and point to the closest available evidence.
+    - Do not provide investment advice, final approval language, or unsupported conclusions.
     """
 ).strip()
 
@@ -53,8 +56,16 @@ def generate_answer(query: str, retrieved_chunks: List[ScoredChunk]) -> dict:
             "page_number": chunk.page_number,
             "doc_id": chunk.document_id,
             "chunk_text": chunk.content,
+            "category": chunk.category,
+            "deal_outcome": chunk.deal_outcome,
+            "chunk_index": chunk.chunk_index,
         }
         for chunk in retrieved_chunks
     ]
 
-    return {"answer": answer, "sources": sources}
+    return {
+        "answer": answer,
+        "sources": sources,
+        "prompt_version": PROMPT_VERSION,
+        "model_name": settings.llm_model,
+    }

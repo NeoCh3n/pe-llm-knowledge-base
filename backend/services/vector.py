@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import Any, Iterable, List, Sequence
 
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
@@ -20,6 +20,9 @@ class ScoredChunk:
     page_number: int
     chunk_index: int
     source: str
+    section: str | None
+    category: str
+    deal_outcome: str | None
 
 
 class EmbeddingModel:
@@ -51,9 +54,16 @@ class QdrantVectorStore:
                 ),
             )
 
-    def upsert_chunks(self, chunks: Iterable[ParsedChunk], document_id: str, filename: str) -> None:
+    def upsert_chunks(
+        self,
+        chunks: Iterable[ParsedChunk],
+        document_id: str,
+        filename: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         chunk_list = list(chunks)
         vectors = self.embedding.embed([chunk.content for chunk in chunk_list])
+        metadata = metadata or {}
 
         points = []
         for chunk, vector in zip(chunk_list, vectors):
@@ -67,26 +77,51 @@ class QdrantVectorStore:
                         "page_number": chunk.page_number,
                         "chunk_index": chunk.chunk_index,
                         "source": chunk.source,
+                        "section": chunk.section,
                         "content": chunk.content,
+                        "category": metadata.get("category"),
+                        "deal_outcome": metadata.get("deal_outcome"),
+                        "deal_id": metadata.get("deal_id"),
                     },
                 )
             )
 
         self.client.upsert(collection_name=settings.qdrant_collection, points=points, wait=True)
 
-    def search(self, query: str, doc_ids: list[str] | None = None, top_k: int = 5) -> List[ScoredChunk]:
+    def search(
+        self,
+        query: str,
+        doc_ids: list[str] | None = None,
+        top_k: int = 5,
+        categories: list[str] | None = None,
+        deal_outcomes: list[str] | None = None,
+    ) -> List[ScoredChunk]:
         query_vector = self.embedding.embed_one(query)
 
-        search_filter = None
+        must_conditions: list[rest.FieldCondition] = []
         if doc_ids:
-            search_filter = rest.Filter(
-                must=[
-                    rest.FieldCondition(
-                        key="document_id",
-                        match=rest.MatchAny(any=doc_ids),
-                    )
-                ]
+            must_conditions.append(
+                rest.FieldCondition(
+                    key="document_id",
+                    match=rest.MatchAny(any=doc_ids),
+                )
             )
+        if categories:
+            must_conditions.append(
+                rest.FieldCondition(
+                    key="category",
+                    match=rest.MatchAny(any=categories),
+                )
+            )
+        if deal_outcomes:
+            must_conditions.append(
+                rest.FieldCondition(
+                    key="deal_outcome",
+                    match=rest.MatchAny(any=deal_outcomes),
+                )
+            )
+
+        search_filter = rest.Filter(must=must_conditions) if must_conditions else None
 
         results = self.client.search(
             collection_name=settings.qdrant_collection,
@@ -107,7 +142,26 @@ class QdrantVectorStore:
                     page_number=int(payload.get("page_number", 1)),
                     chunk_index=int(payload.get("chunk_index", 0)),
                     source=str(payload.get("source", "")),
+                    section=payload.get("section"),
+                    category=str(payload.get("category", "")),
+                    deal_outcome=payload.get("deal_outcome"),
                 )
             )
 
         return scored
+
+    def delete_document(self, document_id: str) -> None:
+        self.client.delete(
+            collection_name=settings.qdrant_collection,
+            points_selector=rest.FilterSelector(
+                filter=rest.Filter(
+                    must=[
+                        rest.FieldCondition(
+                            key="document_id",
+                            match=rest.MatchValue(value=document_id),
+                        )
+                    ]
+                )
+            ),
+            wait=True,
+        )
