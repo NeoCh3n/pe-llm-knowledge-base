@@ -13,7 +13,59 @@ Build a private equity decision-support system that can:
 
 This is not a "chatbot + RAG" system.
 
-## Layer Mapping
+## Current MVP Architecture (Out-of-the-Box)
+
+Following the DX expansion pivot, the application is bundled as a single-file zero-config executable for end users. The infrastructure relies entirely on in-process services.
+
+```mermaid
+graph TD
+    subgraph "Packaged Desktop Application (PyInstaller Single File)"
+        UI["React Frontend (Vite Static Build)"]
+        
+        subgraph "FastAPI Server (Python)"
+            API["REST API Router"]
+            RAG["RAG Answer Agent (Strict Citations)"]
+            Parser["Parser Service (docling)"]
+            
+            subgraph "Embedded Databases (Zero-Config)"
+                SQLite[("SQLite (./data/app.db) \n Facts, Provenance, Deals")]
+                LanceDB[("LanceDB \n Embedded Vector DB")]
+            end
+        end
+    end
+
+    %% User Interaction Flow
+    User([PE Analyst]) -->|Upload PDF / DOCX| UI
+    User -->|Ask Question| UI
+    
+    %% API Flow
+    UI -->|Serve UI at '/'| API
+    UI -->|POST /upload| API
+    UI -->|POST /chat| API
+
+    %% Backend Processing
+    API -->|1. Parse with Tables| Parser
+    Parser -->|Markdown Chunks| SQLite
+    Parser -->|Embeddings| LanceDB
+    
+    %% RAG Flow
+    API -->|2. Search Precedents| RAG
+    RAG -->|Semantic Search| LanceDB
+    RAG -->|Structured Filter| SQLite
+    
+    %% LLM Call (External or Local Model)
+    RAG -->|Generate Answer with 80-char citations| LLM((LLM Provider / Local vLLM))
+
+    %% Visual Layout Definitions
+    classDef app fill:#f9f9f9,stroke:#333,stroke-width:2px;
+    classDef db fill:#ebf8ff,stroke:#2b6cb0,stroke-width:1px;
+    classDef core fill:#e2e8f0,stroke:#64748b,stroke-width:1px;
+    
+    class SQLite,LanceDB db;
+    class Parser,RAG,API core;
+```
+
+## Target Layer Mapping (Future State)
 
 ### 1. Source of truth
 
