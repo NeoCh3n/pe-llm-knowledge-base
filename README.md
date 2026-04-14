@@ -102,15 +102,19 @@ For this local-first PE workstation, the recommended stack is:
 
 This repository now implements the local core. Qdrant remains the retrieval engine; Neo4j and other heavier services are optional extensions, not the default spine.
 
-## Run The MVP
+## Local Infrastructure
 
-### 1. Start infrastructure
+This application is designed to be a zero-config packaged application. It requires **no external databases or Docker containers**.
 
-```bash
-docker compose up -d
-```
+- **System of Record**: SQLite (`./data/app.db`)
+- **Vector Search**: Embedded Vector DB (LanceDB - coming soon to replace Qdrant)
+- **Document Parser**: In-process `docling`
 
-### 2. Install Python dependencies
+## Run The Developer MVP
+
+Until the single-file executable is built, you can run the developer MVP locally:
+
+### 1. Install dependencies
 
 ```bash
 python -m venv .venv
@@ -118,25 +122,29 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure environment
+### 2. Configure LLM
 
 ```bash
 cp .env.example .env
 ```
 
-Set either a local OpenAI-compatible endpoint or a hosted provider in `.env`.
+Open `.env` and set your `LLM_API_KEY` (or configure a local provider like vLLM). No database configuration is required.
 
-### 4. Start the backend
+### 3. Start the application
 
+Start the FastAPI backend with the Vite React frontend:
+
+**Terminal 1 (Backend):**
 ```bash
 uvicorn backend.main:app --reload
 ```
 
-### 5. Optional Streamlit app
-
+**Terminal 2 (Frontend):**
 ```bash
-streamlit run frontend/app.py
+npm run dev
 ```
+
+The application will be available at `http://localhost:5173`.
 
 ## API Summary
 
