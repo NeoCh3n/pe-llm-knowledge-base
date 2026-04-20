@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { FileText, Trash2, RefreshCw, Filter, Calendar, Tag } from 'lucide-react';
+import { FileText, Trash2, RefreshCw, Filter, Calendar, Tag, X } from 'lucide-react';
 import { Document } from '../App';
 import type { Deal } from '../lib/api';
 
@@ -8,9 +8,11 @@ interface DocumentsPageProps {
   deals: Deal[];
   onDelete: (docId: string) => Promise<void>;
   onRefresh: () => Promise<void>;
+  dealIdFilter?: string | null;
+  onClearDealFilter?: () => void;
 }
 
-export function DocumentsPage({ documents, deals, onDelete, onRefresh }: DocumentsPageProps) {
+export function DocumentsPage({ documents, deals, onDelete, onRefresh, dealIdFilter, onClearDealFilter }: DocumentsPageProps) {
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -22,10 +24,13 @@ export function DocumentsPage({ documents, deals, onDelete, onRefresh }: Documen
           searchQuery === '' ||
           doc.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
           doc.tags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase()));
-        return matchesCategory && matchesSearch;
+        const matchesDeal = !dealIdFilter || doc.deal_id === dealIdFilter;
+        return matchesCategory && matchesSearch && matchesDeal;
       }),
-    [documents, filterCategory, searchQuery]
+    [documents, filterCategory, searchQuery, dealIdFilter]
   );
+
+  const activeDeal = dealIdFilter ? deals.find(d => d.id === dealIdFilter) : null;
 
   const categoryStats = {
     all: documents.length,
@@ -52,6 +57,22 @@ export function DocumentsPage({ documents, deals, onDelete, onRefresh }: Documen
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr,260px] gap-6 mb-6">
           <div className="bg-white rounded-lg border border-gray-200 p-4">
+            {activeDeal && (
+              <div className="mb-3 flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                <span className="text-sm text-blue-900">
+                  Viewing documents for deal: <strong>{activeDeal.name}</strong>
+                </span>
+                {onClearDealFilter && (
+                  <button
+                    onClick={onClearDealFilter}
+                    className="flex items-center gap-1 text-xs text-blue-700 hover:text-blue-900 font-medium"
+                  >
+                    <X size={14} />
+                    Clear filter
+                  </button>
+                )}
+              </div>
+            )}
             <div className="relative">
               <input
                 type="text"

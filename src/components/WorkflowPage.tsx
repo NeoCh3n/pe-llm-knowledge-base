@@ -13,9 +13,10 @@ interface WorkflowPageProps {
   latestWorkflow: WorkflowRun | null;
   onRunWorkflow: (query: string, dealId?: string, docIds?: string[]) => void;
   isLoading: boolean;
+  onNavigateToDeal?: (dealId: string) => void;
 }
 
-export function WorkflowPage({ workflowRuns, deals, selectedDocIds, onRunWorkflow, isLoading }: WorkflowPageProps) {
+export function WorkflowPage({ workflowRuns, deals, selectedDocIds, onRunWorkflow, isLoading, onNavigateToDeal }: WorkflowPageProps) {
   const [query, setQuery] = useState('');
   const [selectedDealId, setSelectedDealId] = useState<string>('');
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
@@ -131,7 +132,7 @@ export function WorkflowPage({ workflowRuns, deals, selectedDocIds, onRunWorkflo
                           </h3>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {Object.values(run.output.precedent_scan.buckets).flat().slice(0, 4).map((record, i) => (
-                              <PrecedentCard key={`${run.id}-prec-${i}`} precedent={record} />
+                              <PrecedentCard key={`${run.id}-prec-${i}`} precedent={record} onViewDealDocs={onNavigateToDeal} />
                             ))}
                           </div>
                         </div>

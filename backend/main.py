@@ -85,6 +85,7 @@ class DocumentOut(BaseModel):
     category: str
     deal_outcome: str | None
     status: str
+    deal_id: str | None = None
 
     class Config:
         from_attributes = True
@@ -320,7 +321,22 @@ def health() -> dict:
 
 @app.get("/documents", response_model=List[DocumentOut])
 def list_documents(db: Session = Depends(get_db)):
-    return db.query(Document).order_by(Document.upload_timestamp.desc()).all()
+    documents = db.query(Document).order_by(Document.upload_timestamp.desc()).all()
+    result = []
+    for doc in documents:
+        # Get primary deal_id from deal_links (first link if any)
+        deal_id = doc.deal_links[0].deal_id if doc.deal_links else None
+        result.append(DocumentOut(
+            id=doc.id,
+            filename=doc.filename,
+            upload_timestamp=doc.upload_timestamp,
+            tags=doc.tags,
+            category=doc.category,
+            deal_outcome=doc.deal_outcome,
+            status=doc.status,
+            deal_id=deal_id
+        ))
+    return result
 
 
 @app.get("/documents/{document_id}/status", response_model=DocumentStatusOut)

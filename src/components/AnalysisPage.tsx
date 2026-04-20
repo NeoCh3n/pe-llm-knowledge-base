@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Send, Loader2, Search, Brain, Sparkles, GitBranchPlus } from 'lucide-react';
+import { Send, Loader2, Search, Brain, Sparkles, GitBranchPlus, BrainCircuit, FileSearch } from 'lucide-react';
 import { Message, Document } from '../App';
 import { MessageBubble } from './MessageBubble';
 import { DocumentSelector } from './DocumentSelector';
@@ -122,7 +122,13 @@ export function AnalysisPage({
           {messages.length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center max-w-2xl">
-                <div className="text-5xl mb-4">{analysisType === 'investment_analysis' ? '▣' : '▤'}</div>
+                <div className="mb-4">
+                  {analysisType === 'investment_analysis' ? (
+                    <BrainCircuit size={48} className="mx-auto text-gray-300" />
+                  ) : (
+                    <FileSearch size={48} className="mx-auto text-gray-300" />
+                  )}
+                </div>
                 <h3 className="text-gray-900 mb-2">{analysisType === 'investment_analysis' ? 'Institutional Precedent Search' : 'Document Evidence Search'}</h3>
                 <p className="text-sm text-gray-600 mb-6">
                   {analysisType === 'investment_analysis'

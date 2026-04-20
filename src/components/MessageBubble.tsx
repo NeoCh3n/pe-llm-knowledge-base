@@ -8,8 +8,8 @@ export function MessageBubble({ message }: { message: Message }) {
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser && (
-        <div className="flex-shrink-0 w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-          {message.analysisType === 'investment_analysis' ? <Brain size={18} className="text-blue-600" /> : <Bot size={18} className="text-blue-600" />}
+        <div className="flex-shrink-0 w-8 h-8 flex items-center justify-center">
+          {message.analysisType === 'investment_analysis' ? <Brain size={20} className="text-blue-600" /> : <Bot size={20} className="text-gray-500" />}
         </div>
       )}
 
@@ -50,8 +50,8 @@ export function MessageBubble({ message }: { message: Message }) {
       </div>
 
       {isUser && (
-        <div className="flex-shrink-0 w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
-          <User size={18} className="text-gray-600" />
+        <div className="flex-shrink-0 w-8 h-8 flex items-center justify-center">
+          <User size={20} className="text-gray-400" />
         </div>
       )}
     </div>

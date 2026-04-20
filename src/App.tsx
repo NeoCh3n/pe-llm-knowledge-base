@@ -5,6 +5,7 @@ import { AnalysisPage } from './components/AnalysisPage';
 import { DocumentsPage } from './components/DocumentsPage';
 import { DealsPage } from './components/DealsPage';
 import { WorkflowPage } from './components/WorkflowPage';
+import { MobileResponsiveNotice } from './components/MobileResponsiveNotice';
 import {
   createDeal,
   deleteDocument,
@@ -57,6 +58,7 @@ function App() {
   const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [selectedDealIdFilter, setSelectedDealIdFilter] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshAll();
@@ -226,11 +228,25 @@ function App() {
     }
   };
 
+  const handleNavigateToDeal = (dealId: string) => {
+    setSelectedDealIdFilter(dealId);
+    setCurrentPage('documents');
+  };
+
+  const handleNavigate = (page: Page) => {
+    setCurrentPage(page);
+    if (page !== 'documents') {
+      setSelectedDealIdFilter(null);
+    }
+  };
+
   return (
-    <div className="flex h-screen bg-gray-50">
+    <>
+      <MobileResponsiveNotice />
+      <div className="flex h-screen bg-gray-50">
       <Navigation
         currentPage={currentPage}
-        onNavigate={setCurrentPage}
+        onNavigate={handleNavigate}
         documents={documents}
         deals={deals}
         workflowRuns={workflowRuns}
@@ -259,7 +275,14 @@ function App() {
         )}
 
         {currentPage === 'documents' && (
-          <DocumentsPage documents={documents} deals={deals} onDelete={handleDeleteDocument} onRefresh={refreshAll} />
+          <DocumentsPage
+            documents={documents}
+            deals={deals}
+            onDelete={handleDeleteDocument}
+            onRefresh={refreshAll}
+            dealIdFilter={selectedDealIdFilter}
+            onClearDealFilter={() => setSelectedDealIdFilter(null)}
+          />
         )}
 
         {currentPage === 'deals' && <DealsPage deals={deals} onCreateDeal={handleCreateDeal} isLoading={isLoading} />}
@@ -272,10 +295,12 @@ function App() {
             latestWorkflow={workflowRuns[0] ?? null}
             onRunWorkflow={(query, dealId, docIds) => handleRunWorkflow({ query, deal_id: dealId, doc_ids: docIds })}
             isLoading={isLoading}
+            onNavigateToDeal={handleNavigateToDeal}
           />
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 

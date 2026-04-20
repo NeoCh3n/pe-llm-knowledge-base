@@ -5,6 +5,7 @@ import type { PrecedentRecord } from '../lib/api';
 
 interface PrecedentCardProps {
   precedent: PrecedentRecord;
+  onViewDealDocs?: (dealId: string) => void;
 }
 
 // Convert similarity score float to confidence band
@@ -47,9 +48,10 @@ function getCategoryBorder(category: string): string {
   }
 }
 
-export function PrecedentCard({ precedent }: PrecedentCardProps) {
+export function PrecedentCard({ precedent, onViewDealDocs }: PrecedentCardProps) {
   const confidence = getConfidenceBand(precedent.score);
   const borderClass = getCategoryBorder(precedent.category);
+  const hasDealId = precedent.deal_id && precedent.deal_id !== '';
 
   return (
     <Card className={`mb-4 overflow-hidden ${borderClass} shadow-sm border-gray-200`}>
@@ -108,9 +110,16 @@ export function PrecedentCard({ precedent }: PrecedentCardProps) {
           </div>
           
           <div className="pt-2 flex justify-end">
-             <button className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline">
-               View deal docs →
-             </button>
+            {hasDealId && onViewDealDocs ? (
+              <button
+                onClick={() => onViewDealDocs(precedent.deal_id!)}
+                className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+              >
+                View deal docs →
+              </button>
+            ) : (
+              <span className="text-sm text-gray-400">No linked deal</span>
+            )}
           </div>
         </div>
       </CardContent>
