@@ -224,4 +224,4 @@ Scans a local connector directory and returns ingestible document candidates.
 
 - Existing SQLite files created before the new schema will not auto-migrate columns or tables. For local development, the simplest reset is to remove `workspace/sqlite/pe_core.db` and restart.
 - Page-level precision is still limited by the current `docling` integration because the parser does not yet surface page numbers reliably in this implementation.
-- The React frontend under `src/` and the Streamlit frontend under [`frontend/app.py`](/Users/chaoyanchen/Desktop/pe-llm-knowledge-base/frontend/app.py) are both wired to the live FastAPI backend.
+- The React frontend under `src/` is wired to the live FastAPI backend.

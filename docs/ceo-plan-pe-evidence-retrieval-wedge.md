@@ -55,42 +55,196 @@ The 10x version is not a local NotebookLM for PE firms. It is a local, trustwort
 ## Design Decisions (from /plan-design-review 2026-04-14)
 
 ### Interaction States
+
+| Feature | LOADING | EMPTY | ERROR | SUCCESS | PARTIAL |
+|---------|---------|-------|-------|---------|---------|
+| Analysis chat | Thinking spinner in input | "No documents" with Upload CTA | Red-tinted assistant bubble + Retry | Response with sources | N/A |
+| Upload (per-file) | Spinner per file | — | Inline error callout + Remove/Retry | Checkmark + "N of M uploaded" | "X failed — see details" |
+| Document list | Skeleton rows | "No documents" + Upload CTA | Toast notification | — | N/A |
+| Workflow runs | — | "No workflows run yet" with dashed border | Failed badge (red) | Completed badge (green) | Running badge (blue) |
+| Delete confirm | — | — | — | — | Inline "Are you sure? [Delete] [Cancel]" |
+| Deal form | Submit spinner | — | Field-level errors | Success toast + redirect | — |
+| Precedent retrieval | Skeleton cards | "No precedents found" | Error banner | Cards displayed | Partial matches with confidence |
+
+**State-specific behaviors:**
 - Error display: errors show in context only — no global banner. Chat errors appear as a red-tinted assistant bubble with a Retry button. Upload/delete errors appear as inline per-file callouts. Remove `setErrorMessage` global banner pattern.
 - Batch upload partial failures: show per-file status list during upload (uploading → success/error per file). On completion: summary line "N of M uploaded. X failed — see details." with individual Retry/Remove per failed file.
 - Workflow run in-progress state: show a status indicator on the Workflow Runs page for runs that are not yet complete (pending/running/failed/complete).
 - Delete confirmation: replace `window.confirm()` with an inline confirmation pattern (e.g., button changes to "Are you sure? [Delete] [Cancel]" on first click). No browser native dialogs.
 
-### Unresolved Design Decisions (resolved in this session)
-- WorkflowPage component: **missing** — App.tsx imports it but file doesn't exist, app won't compile. Design: run-history list with expandable run detail view. Each run shows: status badge (pending/running/complete/failed), timestamp, linked deal name. Expanded view shows per-step outputs (precedent scan, risk gap, DD questions, IC memo draft) with a "View memo" action. Launch trigger also lives on this page (not buried in the Analysis header).
-- DealsPage form: replace 11-input flat grid with labeled inputs in semantic groups: Identity (name, company, sector, stage, geography), Process (decision status, outcome status, fund, vintage year, partner), Summary textarea. Decision status and outcome status become `<select>` dropdowns with defined option sets: decision = [passed, rejected, passed-with-conditions, withdrawn]; outcome = [realized, unrealized, written-off, pending].
+### Unresolved Design Decisions
+
+| Decision Needed | Options | Recommendation | If Deferred, What Happens |
+|-----------------|---------|----------------|---------------------------|
+| Mobile responsive notice | Overlay vs banner | Full-screen overlay with dismiss | Ships without mobile UX; tablet users see broken layout |
+| PrecedentCard citation click | New tab vs modal vs sidebar | Open in Documents page with auto-filter | No way to view source document from card; breaks trust loop |
+| Workflow run error retry | Inline retry vs clone-and-relaunch | "Retry" button clones run with same params | Failed runs require manual re-launch; user frustration |
+| Analysis empty state icon | BrainCircuit vs FileSearch vs custom | BrainCircuit for investment, FileSearch for doc search | Generic icon reduces mode clarity |
+| Upload progress granularity | File-level only vs page-level | File-level for MVP (page-level in TODOS) | Users anxious during large PDF upload |
+| Deal form validation | Inline vs on-submit | Inline with debounce | Users discover errors late; form abandonment |
+
+**Previously resolved (from Pass 2):**
+- WorkflowPage component: **ACCEPTED** — run-history list with expandable run detail view
+- DealsPage form: **ACCEPTED** — replace 11-input flat grid with semantic groups
+- Error display: **ACCEPTED** — context-only errors, no global banner
+- BackgroundTasks polling: **ACCEPTED** — polling (simpler, no WebSocket protocol change)
+- Confidence band vs float: **ACCEPTED** — confidence band ("High/Medium/Low") more readable to PE audience
+- Citation excerpt source: **ACCEPTED** — chunk start (deterministic, no second retrieval call)
 
 ### Responsive & Accessibility
-- Responsive strategy: **desktop-only**. Minimum supported width is 1024px. Add a responsive notice for viewports below md breakpoint: "PE Memory OS is optimized for desktop use (1024px+)." Show this as a full-screen overlay or banner on mobile/tablet rather than silently breaking.
-- Accessibility — contrast: replace `text-gray-400` with `text-gray-500` for all secondary/muted text on white backgrounds. `gray-400` is acceptable on the dark sidebar (bg-gray-900) but fails WCAG AA on white.
-- Accessibility — icon buttons: add `aria-label` to all icon-only buttons (delete button in DocumentCard, close button in DocumentSelector, send button in AnalysisPage).
-- Accessibility — mode toggle: add `role="tablist"` / `role="tab"` / `aria-selected` to the Investment Analysis / Document Search toggle in AnalysisPage.
+
+**Responsive Strategy:** Desktop-only
+- Minimum supported width: 1024px
+- Below md breakpoint: show responsive notice overlay
+- Notice text: "PE Memory OS is optimized for desktop use (1024px+)."
+- Implementation: full-screen overlay or banner on mobile/tablet rather than silently breaking
+
+**Accessibility Checklist:**
+
+| Requirement | Location | Implementation |
+|-------------|----------|----------------|
+| Contrast | All text on white | `text-gray-500` minimum (not `text-gray-400`). `gray-400` acceptable on dark sidebar (bg-gray-900) |
+| Icon buttons | MessageBubble.tsx:11, DocumentCard delete | Add `aria-label` to all icon-only buttons |
+| Mode toggle | AnalysisPage.tsx:71-86 | Add `role="tablist"` / `role="tab"` / `aria-selected` |
+| Touch targets | Navigation.tsx:87-102 | Verify `py-2.5 px-3` meets 44px min; increase to `py-3` if needed |
+| Keyboard nav | DocumentSelector.tsx | Escape closes panel; Tab moves through checkboxes |
+| Focus indicators | All interactive elements | Visible focus rings (browser default or custom) |
+| Screen reader | PrecedentCard badges | `aria-label` describing confidence/decision/outcome |
+| Status updates | Workflow runs | `aria-live="polite"` for status changes |
+
+**Specific implementations:**
+- Replace `text-gray-400` with `text-gray-500` for all secondary/muted text on white backgrounds. `gray-400` is acceptable on the dark sidebar (bg-gray-900) but fails WCAG AA on white.
+- Add `aria-label` to all icon-only buttons (delete button in DocumentCard, close button in DocumentSelector, send button in AnalysisPage).
+- Add `role="tablist"` / `role="tab"` / `aria-selected` to the Investment Analysis / Document Search toggle in AnalysisPage.
 - Touch targets: all interactive elements must be at minimum 44px tall. Verify `py-2.5 px-3` nav items meet this; increase to `py-3` if needed.
 - Keyboard navigation: DocumentSelector panel must be keyboard-accessible. Escape closes it; tab moves through checkboxes.
 
-### Design System (stub — needs /design-consultation)
-- No DESIGN.md exists. This is a gap. The current design is internally consistent but undocumented.
-- Until DESIGN.md is created, the working design token set is: primary bg = gray-900 (sidebar), content bg = gray-50 (page) / white (cards), accent = blue-600, text = gray-900 (primary) / gray-600 (secondary) / gray-400 (muted).
-- Card vocabulary: `bg-white border border-gray-200 rounded-xl p-5` = primary card. Do not introduce new card variants without documenting them.
-- Run `/design-consultation` before Phase 2 to formalize the design system.
+### Design System
+
+**ACTION REQUIRED:** Run `/design-consultation` before Phase 2 to formalize the design system.
+
+**Current Status:** No DESIGN.md exists. The design system is internally consistent but undocumented. Phase 2 adds significant new UI (canonical deal model, outcome labels, structured retrieval). Without a design contract, those screens will diverge.
+
+**Interim Token Set (until DESIGN.md exists):**
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--bg-primary` | `gray-900` | Sidebar background |
+| `--bg-content` | `gray-50` | Page background |
+| `--bg-card` | `white` | Card surfaces |
+| `--accent` | `blue-600` | Primary actions, active states |
+| `--text-primary` | `gray-900` | Headings, primary content |
+| `--text-secondary` | `gray-600` | Body text, descriptions |
+| `--text-muted` | `gray-500` | Muted text on white (WCAG AA) |
+| `--text-muted-dark` | `gray-400` | Muted text on dark sidebar |
+| `--border` | `gray-200` | Card borders, dividers |
+| `--font-body` | `Inter, sans-serif` | All body text |
+| `--font-mono` | `JetBrains Mono, monospace` | Numeric/financial fields |
+
+**Component Vocabulary:**
+- **Primary card:** `bg-white border border-gray-200 rounded-xl p-5` — main content containers
+- **Nav item:** `px-3 py-2.5 rounded-lg` — sidebar navigation (active: `bg-blue-600`, inactive: `hover:bg-gray-800`)
+- **Badge:** `px-2 py-0.5 text-xs rounded-full` — counts, status indicators
+- **Button primary:** `bg-blue-600 text-white rounded-lg hover:bg-blue-700`
+- **Button secondary:** `bg-gray-900 text-white rounded-lg hover:bg-gray-800`
+- **Touch target:** minimum 44px height — verify `py-2.5 px-3` nav items meet this; increase to `py-3` if needed
+
+**Do not introduce new card variants without documenting them here.**
 
 ### Visual Identity & AI Slop Prevention
+
+**AI Slop Audit (10-pattern blacklist):**
+
+| Pattern | Status | Location | Fix |
+|---------|--------|----------|-----|
+| 1. Purple/violet gradients | ❌ NOT FOUND | — | — |
+| 2. 3-column feature grid | ❌ NOT FOUND | — | — |
+| 3. Icons in colored circles | ⚠️ FOUND | MessageBubble.tsx:11, AnalysisPage.tsx:92 | Remove `bg-blue-100 rounded-full` |
+| 4. Centered everything | ⚠️ PARTIAL | Empty state only | Acceptable for empty state |
+| 5. Uniform bubbly border-radius | ⚠️ FOUND | All cards use `rounded-xl` | Vary by hierarchy |
+| 6. Decorative blobs | ❌ NOT FOUND | — | — |
+| 7. Emoji/Unicode as icons | ⚠️ FOUND | AnalysisPage.tsx:125-126 | Replace ▣ ▤ with lucide-react |
+| 8. Colored left-border cards | ✅ INTENTIONAL | DocumentCard, PrecedentCard | Category signal system |
+| 9. Generic hero copy | ❌ NOT FOUND | — | — |
+| 10. Cookie-cutter rhythm | ⚠️ PARTIAL | Card-heavy layout | Appropriate for data-dense app |
+
+**Design Classifier:** APP UI (workspace-driven, data-dense, task-focused)
+- Calm surface hierarchy, strong typography, few colors
+- Dense but readable, minimal chrome
+- Organize: primary workspace, navigation, secondary context, one accent
+- Avoid: dashboard-card mosaics, thick borders, decorative gradients, ornamental icons
+- Copy: utility language — orientation, status, action. Not mood/brand/aspiration
+
+**Specific fixes:**
 - Remove `bg-blue-100 rounded-lg` icon circles from DocumentCard and deal cards. The category badge is the primary identity signal.
 - Document cards: add a 3px left-border accent colored by category (purple = historical_deal, green = current_opportunity, blue = market_research, orange = portfolio_report, gray = other). Category badge remains as the explicit label.
 - Typography: import Inter from Google Fonts. Set `body { font-family: 'Inter', sans-serif; }`. Use `font-mono` (JetBrains Mono or similar) for numeric/financial fields: vintage year, any valuation figures added later.
 - Avoid adding any new icon-in-circle patterns when implementing new features.
 
 ### User Journey & Emotional Arc
+
+**Persona:** PE Analyst (Associate or VP), time-constrained, needs defensible precedents fast.
+
+```
+USER JOURNEY STORYBOARD
+
+STEP | USER DOES                    | USER FEELS                  | PLAN SPECIFIES?
+-----|------------------------------|-----------------------------|----------------
+T+0s | Lands on empty Analysis      | "Do I need to configure?"   | Empty state CTA → Upload
+T+5s | Clicks "Go to Upload"        | "Straightforward"           | Clear upload zone
+T+30s| Drops PDF files              | "Is this working?"          | Per-file progress
+T+2m | Sees "14/60 pages parsed"    | "It's processing"           | Granular feedback
+T+5m | Returns to Analysis, queries | "Will it find precedents?"  | Precedent cards
+T+10m| Sees cited sources           | "I can verify this"         | Filename+page+excerpt
+T+30m| Runs IC workflow             | "This saves hours"          | Structured output
+WEEK+| Checks Workflow history      | "My work is preserved"      | Persistent runs
+
+EMOTIONAL ARC: Anxiety → Confidence → Trust → Efficiency
+```
+
+**Time-horizon design:**
+- **5-second (visceral):** Empty state warmth, clear CTAs, no configuration required
+- **5-minute (behavioral):** Upload feedback, precedent retrieval, verifiable citations
+- **5-session (reflective):** Workflow history, institutional memory building
+
+**Specific implementations:**
 - Remove Unicode block characters (`▣`, `▤`) as icons in the Analysis empty state. Replace with a lucide-react icon (e.g., `<BrainCircuit>` for investment analysis, `<FileSearch>` for document search) at a modest size (40–48px, text-gray-300).
 - Memory Snapshot panel: replace raw zero counts with outcome-aware breakdown when data exists. Format: "47 docs — 12 passed / 8 failed / 27 pending" rather than just "47". When all zeros, show "No history yet" in muted text.
 - Upload progress: show per-file upload progress (at minimum: file name + spinner → checkmark on success). This answers "Is this working?" during the critical first-use moment.
 - Source citation trust loop: after a query response, each source citation should show the document filename, the relevant excerpt (first 80 chars), and the category badge. This is the primary trust signal — "it used MY documents."
 
 ### Information Architecture
+
+```
+PE Memory OS — Information Architecture
+
+NAVIGATION (Sidebar — 3 groups with separator lines)
+├── Primary Group
+│   └── Analysis (chat/precedent retrieval — main entry point)
+├── Data Group
+│   ├── Upload (document ingestion)
+│   ├── Document Library (browse/search docs)
+│   └── Deals (canonical deal records)
+└── Outputs Group
+    └── Workflow Runs (IC workflow history)
+
+PAGE: Analysis
+├── Header: Mode toggle (Investment Analysis | Document Search)
+├── Context panel: Workflow launch, deal selector
+├── Chat area: Messages + empty state
+└── Input: Query textarea, Run Workflow button, Send button
+
+PAGE: Workflow
+├── Launch trigger (header)
+└── History list (expandable cards)
+    └── Expanded: Precedent cards, Synthesis, Risk gaps
+
+FIRST-RUN FLOW
+1. Empty Analysis → "No documents in memory" → [Go to Upload]
+2. Upload → per-file progress → success state
+3. Return to Analysis → query with precedent retrieval
+```
+
 - Nav hierarchy: primary group (Analysis only), data group (Upload, Documents, Deals), outputs group (Workflow Runs). Separator lines between groups in sidebar.
 - First-run detection: when `documents.length === 0`, Analysis empty state shows "No documents in memory. Upload your first deal docs to get started." with a `[→ Go to Upload]` button that navigates to Upload page.
 - Workflow Runs stays in nav but visually de-emphasized (below a separator, smaller weight or muted label when run count = 0).
@@ -141,8 +295,8 @@ HOUR 6+ (polish):
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 2 | DONE | Pass 1: 4 scope decisions. Pass 2: SELECTIVE EXPANSION, 5/5 cherry-picks accepted. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | DONE_WITH_CONCERNS | 11 findings (1xP0-risk, 2xP1, 6xP2, 3xP3) — see below |
-| Design Review | `/plan-design-review` | UI/UX gaps | 2 | DONE | score: 7/10 → 9/10, 10 decisions resolved |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+| Design Review | `/plan-design-review` | UI/UX gaps | 3 | DONE | score: 6/10 → 8/10, 6 decisions resolved, 6 unresolved (see Design Decisions) |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 1 | DONE | Pivot to Out-of-the-Box App: LanceDB embedded, PyInstaller bundling, First-Run Setup UI. |
 
 ### Eng Review Summary (2026-04-14, run by Antigravity)
 
@@ -169,3 +323,21 @@ HOUR 6+ (polish):
 
 **UNRESOLVED:** 0 design decisions open. Eng: 10 findings open (2 P1 critical path).
 **VERDICT:** ENG REVIEW COMPLETE — P1 issues (silent Qdrant failures + partial ingestion saga) must be fixed before trusting document state in production. P0-risk CORS fix is 5 minutes. Design review done. CEO review still pending.
+
+### DX Review Summary (2026-04-14, run by Antigravity)
+
+**Strategic Pivot: Local-First to Out-of-the-Box**
+The application distribution model has been pivoted from a developer-focused "clone and docker-compose" repo to an end-user **Packaged Desktop Application**.
+
+**Accepted DX / Product Expansions:**
+1. **Embedded Vector Database (LanceDB):** Remove Qdrant docker dependency. Use an embedded in-process database (LanceDB or Chroma local mode) to eliminate daemon prerequisites.
+2. **PyInstaller Single-File Bundling:** Compile the Vite/React frontend to static files served by FastAPI at `/`, and bundle the entire Python runtime into a single executable using PyInstaller.
+3. **First-Run Configuration UI:** Remove `.env` requirements. On first launch, the app routes to a Setup screen to capture the `LLM_API_KEY` and save it to a local AppData config.
+4. **"Acme Deal" Sandboxed Demo:** Bundle 2 pre-embedded, fictional deal memos into the executable. The app immediately offers a "< 2 minute" magical moment demonstration without requiring the user to wait for their own initial upload to parse.
+5. **Granular Upload Feedback:** Expose `docling` extraction progress to the UI (e.g., "Parsed 14/60 pages...") to eliminate anxiety during the first heavy ingestion.
+
+**DX SCORECARD:**
+- Product Type: Packaged App (Desktop)
+- Target Persona: Engineering-savvy Analyst
+- TTHW (Time To Hello World): < 2 min (Champion tier via Acme Demo)
+- Overall DX Impression: Vercel/Stripe tier if executed cleanly. Transforms the tool from a "hobby project" into a "deployable PE asset".
