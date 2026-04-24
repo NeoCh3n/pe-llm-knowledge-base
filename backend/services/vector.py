@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from typing import Any, Iterable, List, Sequence
+from typing import Any, Iterable, List, Optional, Sequence
 
+import numpy as np
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
-from qdrant_client.http import models as rest
+from qdrant_client.http import models
 
 from backend.config import get_settings
 from backend.services.parser import ParsedChunk
@@ -20,9 +21,9 @@ class ScoredChunk:
     page_number: int
     chunk_index: int
     source: str
-    section: str | None
+    section: Optional[str]
     category: str
-    deal_outcome: str | None
+    deal_outcome: Optional[str]
 
 
 class EmbeddingModel:
@@ -30,7 +31,7 @@ class EmbeddingModel:
         self.model = TextEmbedding(model_name=model_name)
 
     def embed(self, texts: Sequence[str]) -> List[List[float]]:
-        return [vec for vec in self.model.embed(texts)]
+        return [list(vec) for vec in self.model.embed(texts)]
 
     def embed_one(self, text: str) -> List[float]:
         return self.embed([text])[0]
@@ -38,7 +39,9 @@ class EmbeddingModel:
 
 class QdrantVectorStore:
     def __init__(self):
-        self.client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+        self.client = QdrantClient(
+            url=settings.qdrant_url, api_key=settings.qdrant_api_key
+        )
         self.embedding = EmbeddingModel(settings.embedding_model_name)
         self._ensure_collection()
 
@@ -49,17 +52,21 @@ class QdrantVectorStore:
         so that a service restart never wipes existing vectors.
         """
         try:
-            self.client.get_collection(settings.qdrant_collection)
+            self.client.http.collections_api.get_collection(
+                collection_name=settings.qdrant_collection
+            )
             return  # already exists — nothing to do
         except Exception:
             pass  # collection not found — create it below
 
         try:
-            self.client.create_collection(
+            self.client.http.collections_api.create_collection(
                 collection_name=settings.qdrant_collection,
-                vectors_config=rest.VectorParams(
-                    size=settings.embedding_dim,
-                    distance=rest.Distance.COSINE,
+                create_collection=models.CreateCollection(
+                    vectors=models.VectorParams(
+                        size=settings.embedding_dim,
+                        distance=models.Distance.COSINE,
+                    ),
                 ),
             )
         except Exception as exc:
@@ -73,7 +80,7 @@ class QdrantVectorStore:
         chunks: Iterable[ParsedChunk],
         document_id: str,
         filename: str,
-        metadata: dict[str, Any] | None = None,
+        metadata: Optional[dict] = None,
     ) -> None:
         chunk_list = list(chunks)
         vectors = self.embedding.embed([chunk.content for chunk in chunk_list])
@@ -82,7 +89,7 @@ class QdrantVectorStore:
         points = []
         for chunk, vector in zip(chunk_list, vectors):
             points.append(
-                rest.PointStruct(
+                models.PointStruct(
                     id=f"{document_id}-{chunk.chunk_index}",
                     vector=vector,
                     payload={
@@ -100,7 +107,13 @@ class QdrantVectorStore:
                 )
             )
 
-        self.client.upsert(collection_name=settings.qdrant_collection, points=points, wait=True)
+        # Use new API for upsert
+        points_list = models.PointsList(points=points)
+        self.client.http.points_api.upsert_points(
+            collection_name=settings.qdrant_collection,
+            wait=True,
+            point_insert_operations=points_list,
+        )
 
     def search(
         self,
@@ -112,40 +125,50 @@ class QdrantVectorStore:
     ) -> List[ScoredChunk]:
         query_vector = self.embedding.embed_one(query)
 
-        must_conditions: list[rest.FieldCondition] = []
+        must_conditions: list[models.FieldCondition] = []
         if doc_ids:
             must_conditions.append(
-                rest.FieldCondition(
+                models.FieldCondition(
                     key="document_id",
-                    match=rest.MatchAny(any=doc_ids),
+                    match=models.MatchAny(any=doc_ids),
                 )
             )
         if categories:
             must_conditions.append(
-                rest.FieldCondition(
+                models.FieldCondition(
                     key="category",
-                    match=rest.MatchAny(any=categories),
+                    match=models.MatchAny(any=categories),
                 )
             )
         if deal_outcomes:
             must_conditions.append(
-                rest.FieldCondition(
+                models.FieldCondition(
                     key="deal_outcome",
-                    match=rest.MatchAny(any=deal_outcomes),
+                    match=models.MatchAny(any=deal_outcomes),
                 )
             )
 
-        search_filter = rest.Filter(must=must_conditions) if must_conditions else None
+        search_filter = models.Filter(must=must_conditions) if must_conditions else None
 
-        results = self.client.search(
-            collection_name=settings.qdrant_collection,
-            query_vector=query_vector,
-            query_filter=search_filter,
+        # Build search request for new API
+        search_request = models.SearchRequest(
+            vector=models.NamedVector(
+                name="",
+                vector=query_vector,
+            ),
+            filter=search_filter,
             limit=top_k,
+            with_payload=True,
+        )
+
+        # Call new API
+        response = self.client.http.search_api.search_points(
+            collection_name=settings.qdrant_collection,
+            search_request=search_request,
         )
 
         scored: List[ScoredChunk] = []
-        for hit in results:
+        for hit in response.result or []:
             payload = hit.payload or {}
             scored.append(
                 ScoredChunk(
@@ -165,17 +188,19 @@ class QdrantVectorStore:
         return scored
 
     def delete_document(self, document_id: str) -> None:
-        self.client.delete(
+        # Use FilterSelector directly (PointsSelector is a Union type)
+        selector = models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="document_id",
+                        match=models.MatchValue(value=document_id),
+                    )
+                ]
+            )
+        )
+        self.client.http.points_api.delete_points(
             collection_name=settings.qdrant_collection,
-            points_selector=rest.FilterSelector(
-                filter=rest.Filter(
-                    must=[
-                        rest.FieldCondition(
-                            key="document_id",
-                            match=rest.MatchValue(value=document_id),
-                        )
-                    ]
-                )
-            ),
             wait=True,
+            points_selector=selector,
         )
