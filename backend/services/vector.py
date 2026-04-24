@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional, Sequence
+import uuid
 
 import numpy as np
 from fastembed import TextEmbedding
@@ -88,7 +89,7 @@ class QdrantVectorStore:
         for chunk, vector in zip(chunk_list, vectors):
             points.append(
                 models.PointStruct(
-                    id=f"{document_id}-{chunk.chunk_index}",
+                    id=str(uuid.uuid4()),  # Use UUID for embedded mode compatibility
                     vector=vector,
                     payload={
                         "document_id": document_id,
@@ -146,15 +147,17 @@ class QdrantVectorStore:
 
         search_filter = models.Filter(must=must_conditions) if must_conditions else None
 
-        results = self.client.search(
+        # Use query_points() for embedded mode compatibility
+        results = self.client.query_points(
             collection_name=settings.qdrant_collection,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=search_filter,
             limit=top_k,
+            with_payload=True,
         )
 
         scored: List[ScoredChunk] = []
-        for hit in results:
+        for hit in results.points:  # query_points returns points in .points attribute
             payload = hit.payload or {}
             scored.append(
                 ScoredChunk(
