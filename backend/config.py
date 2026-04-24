@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     cache_root: str = Field(default="./workspace/cache")
     logs_root: str = Field(default="./workspace/logs")
     qdrant_url: str = Field(default="http://localhost:6333")
+    qdrant_path: str | None = Field(default=None)
     qdrant_api_key: str | None = Field(default=None)
     qdrant_collection: str = Field(default="pe_docs")
     embedding_model_name: str = Field(default="sentence-transformers/all-MiniLM-L6-v2")

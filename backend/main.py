@@ -48,7 +48,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=False,   # False: no cookies/auth headers cross-origin
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -581,22 +581,59 @@ def workflow_run(request: WorkflowRequest, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/workflow/runs")
-def list_workflow_runs(deal_id: str | None = None, db: Session = Depends(get_db)):
-    query = db.query(WorkflowRun)
-    if deal_id:
-        query = query.filter(WorkflowRun.deal_id == deal_id)
-    runs = query.order_by(WorkflowRun.created_at.desc()).all()
-    return [
-        {
-            "id": run.id,
-            "deal_id": run.deal_id,
-            "workflow_type": run.workflow_type,
-            "status": run.status,
-            "model_name": run.model_name,
-            "prompt_version": run.prompt_version,
-            "created_at": run.created_at,
-            "output": run.output_json,
-        }
-        for run in runs
-    ]
+class LLMConfigUpdate(BaseModel):
+    llm_provider: str
+    llm_model: str
+    llm_base_url: str
+    llm_api_key: str | None = None
+
+
+@app.get("/config/llm")
+def get_llm_config():
+    return {
+        "llm_provider": settings.llm_provider,
+        "llm_model": settings.llm_model,
+        "llm_base_url": settings.llm_base_url,
+        "llm_api_key": settings.llm_api_key,
+    }
+
+
+@app.put("/config/llm")
+def update_llm_config(payload: LLMConfigUpdate):
+    import os
+    from pathlib import Path
+
+    env_path = Path(".env")
+    env_vars = {}
+
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    env_vars[key] = value
+
+    env_vars["LLM_PROVIDER"] = payload.llm_provider
+    env_vars["LLM_MODEL"] = payload.llm_model
+    env_vars["LLM_BASE_URL"] = payload.llm_base_url
+    if payload.llm_api_key:
+        env_vars["LLM_API_KEY"] = payload.llm_api_key
+    elif "LLM_API_KEY" in env_vars:
+        del env_vars["LLM_API_KEY"]
+
+    with open(env_path, "w") as f:
+        for key, value in env_vars.items():
+            f.write(f"{key}={value}\n")
+
+    settings.llm_provider = payload.llm_provider
+    settings.llm_model = payload.llm_model
+    settings.llm_base_url = payload.llm_base_url
+    settings.llm_api_key = payload.llm_api_key
+
+    return {
+        "llm_provider": settings.llm_provider,
+        "llm_model": settings.llm_model,
+        "llm_base_url": settings.llm_base_url,
+        "llm_api_key": settings.llm_api_key,
+    }
