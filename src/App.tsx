@@ -5,6 +5,7 @@ import { AnalysisPage } from './components/AnalysisPage';
 import { DocumentsPage } from './components/DocumentsPage';
 import { DealsPage } from './components/DealsPage';
 import { SettingsPage } from './components/SettingsPage';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { MobileResponsiveNotice } from './components/MobileResponsiveNotice';
 import {
   createDeal,
@@ -301,15 +302,17 @@ function App() {
         {currentPage === 'deals' && <DealsPage deals={deals} onCreateDeal={handleCreateDeal} isLoading={isLoading} />}
 
         {currentPage === 'workflow' && (
-          <WorkflowPage
-            workflowRuns={workflowRuns}
-            deals={deals}
-            selectedDocIds={[]}
-            latestWorkflow={workflowRuns[0] ?? null}
-            onRunWorkflow={(query, dealId, docIds) => handleRunWorkflow({ query, deal_id: dealId, doc_ids: docIds })}
-            isLoading={isLoading}
-            onNavigateToDeal={handleNavigateToDeal}
-          />
+          <ErrorBoundary>
+            <WorkflowPage
+              workflowRuns={workflowRuns}
+              deals={deals}
+              selectedDocIds={[]}
+              latestWorkflow={workflowRuns[0] ?? null}
+              onRunWorkflow={(query, dealId, docIds) => handleRunWorkflow({ query, deal_id: dealId, doc_ids: docIds })}
+              isLoading={isLoading}
+              onNavigateToDeal={handleNavigateToDeal}
+            />
+          </ErrorBoundary>
         )}
 
         {currentPage === 'settings' && <SettingsPage />}
