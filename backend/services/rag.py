@@ -47,9 +47,15 @@ def generate_answer(query: str, retrieved_chunks: List[ScoredChunk]) -> dict:
         model=settings.llm_model,
         messages=messages,
         temperature=0,
+        max_tokens=500,
     )
 
-    answer = completion.choices[0].message.content if completion.choices else ""
+    # Handle empty content (LM Studio may return reasoning_content only)
+    message = completion.choices[0].message if completion.choices else None
+    answer = message.content if message and message.content else ""
+    # If still empty, try reasoning_content as fallback
+    if not answer and message:
+        answer = getattr(message, "reasoning_content", "")[:500]
     sources = [
         {
             "filename": chunk.filename,

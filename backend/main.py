@@ -5,7 +5,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -47,7 +55,7 @@ _ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
-    allow_credentials=False,   # False: no cookies/auth headers cross-origin
+    allow_credentials=False,  # False: no cookies/auth headers cross-origin
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
@@ -55,15 +63,16 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Singletons — initialized once at startup via app.state
 # ---------------------------------------------------------------------------
-vector_store: QdrantVectorStore | None = None
 workspace_manager: WorkspaceManager | None = None
 
 
 def get_vector_store() -> QdrantVectorStore:
-    global vector_store
-    if vector_store is None:
-        vector_store = QdrantVectorStore()
-    return vector_store
+    """Create a new QdrantVectorStore per call to avoid thread issues.
+
+    QdrantClient (embedded mode) uses SQLite internally which is thread-unsafe.
+    Each thread should have its own instance.
+    """
+    return QdrantVectorStore()
 
 
 def get_workspace_manager() -> WorkspaceManager:
@@ -76,6 +85,7 @@ def get_workspace_manager() -> WorkspaceManager:
 # ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
+
 
 class DocumentOut(BaseModel):
     id: str
@@ -172,6 +182,7 @@ class WorkflowRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _hash_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
@@ -194,7 +205,11 @@ def _link_document_to_deal(db: Session, document_id: str, deal_id: str | None) -
     deal = db.query(Deal).filter(Deal.id == deal_id).first()
     if deal is None:
         raise HTTPException(status_code=400, detail=f"Unknown deal_id: {deal_id}")
-    db.add(DealDocumentLink(deal_id=deal_id, document_id=document_id, relation_type="evidence"))
+    db.add(
+        DealDocumentLink(
+            deal_id=deal_id, document_id=document_id, relation_type="evidence"
+        )
+    )
 
 
 def _store_chunks(db: Session, document_id: str, chunks: list[ParsedChunk]) -> None:
@@ -229,6 +244,7 @@ def _build_retrieval_trace_payload(retrieved: list) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Background ingestion task
 # ---------------------------------------------------------------------------
+
 
 def _ingest_document(
     document_id: str,
@@ -283,7 +299,9 @@ def _ingest_document(
             doc.status = "ready"
             db.commit()
 
-        logger.info("Ingestion complete: document_id=%s chunks=%d", document_id, len(chunks))
+        logger.info(
+            "Ingestion complete: document_id=%s chunks=%d", document_id, len(chunks)
+        )
 
     except Exception as exc:
         logger.exception("Ingestion failed: document_id=%s error=%s", document_id, exc)
@@ -303,6 +321,7 @@ def _ingest_document(
 # Startup
 # ---------------------------------------------------------------------------
 
+
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
@@ -313,6 +332,7 @@ def on_startup():
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @app.get("/health")
 def health() -> dict:
@@ -326,16 +346,18 @@ def list_documents(db: Session = Depends(get_db)):
     for doc in documents:
         # Get primary deal_id from deal_links (first link if any)
         deal_id = doc.deal_links[0].deal_id if doc.deal_links else None
-        result.append(DocumentOut(
-            id=doc.id,
-            filename=doc.filename,
-            upload_timestamp=doc.upload_timestamp,
-            tags=doc.tags,
-            category=doc.category,
-            deal_outcome=doc.deal_outcome,
-            status=doc.status,
-            deal_id=deal_id
-        ))
+        result.append(
+            DocumentOut(
+                id=doc.id,
+                filename=doc.filename,
+                upload_timestamp=doc.upload_timestamp,
+                tags=doc.tags,
+                category=doc.category,
+                deal_outcome=doc.deal_outcome,
+                status=doc.status,
+                deal_id=deal_id,
+            )
+        )
     return result
 
 
@@ -344,7 +366,9 @@ def document_status(document_id: str, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    return DocumentStatusOut(id=doc.id, status=doc.status, status_error=doc.status_error)
+    return DocumentStatusOut(
+        id=doc.id, status=doc.status, status_error=doc.status_error
+    )
 
 
 @app.delete("/documents/{document_id}")
@@ -425,7 +449,9 @@ async def upload_document(
         try:
             extra_metadata = json.loads(metadata_json)
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid metadata_json: {exc}") from exc
+            raise HTTPException(
+                status_code=400, detail=f"Invalid metadata_json: {exc}"
+            ) from exc
 
     content = await file.read()
 
@@ -460,7 +486,11 @@ async def upload_document(
             entity_type="document",
             entity_id=document.id,
             action="uploaded",
-            payload_json={"filename": document.filename, "deal_id": deal_id, "category": category},
+            payload_json={
+                "filename": document.filename,
+                "deal_id": deal_id,
+                "category": category,
+            },
         )
     )
     db.commit()
@@ -511,7 +541,9 @@ def chat(request: ChatRequest, db: Session = Depends(get_db)):
             deal_outcomes=deal_outcomes,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Vector search failed: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Vector search failed: {exc}"
+        ) from exc
 
     if not retrieved:
         raise HTTPException(status_code=404, detail="No relevant context found")
