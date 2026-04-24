@@ -32,7 +32,9 @@ def _build_context(chunks: List[ScoredChunk]) -> str:
 
 
 def generate_answer(query: str, retrieved_chunks: List[ScoredChunk]) -> dict:
-    client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
+    # For LM Studio (local server), api_key can be dummy value if not set
+    api_key = settings.llm_api_key if settings.llm_api_key else "not-needed"
+    client = OpenAI(api_key=api_key, base_url=settings.llm_base_url)
     context = _build_context(retrieved_chunks)
 
     messages = [

@@ -541,14 +541,21 @@ def chat(request: ChatRequest, db: Session = Depends(get_db)):
             deal_outcomes=deal_outcomes,
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"Vector search failed: {exc}"
-        ) from exc
+        import traceback
+
+        error_detail = f"Vector search failed: {exc}\n{traceback.format_exc()}"
+        raise HTTPException(status_code=500, detail=error_detail) from exc
 
     if not retrieved:
         raise HTTPException(status_code=404, detail="No relevant context found")
 
-    answer_payload = generate_answer(request.query, retrieved)
+    try:
+        answer_payload = generate_answer(request.query, retrieved)
+    except Exception as exc:
+        import traceback
+
+        error_detail = f"Generate answer failed: {exc}\n{traceback.format_exc()}"
+        raise HTTPException(status_code=500, detail=error_detail) from exc
 
     log = ChatLog(user_query=request.query, ai_response=answer_payload["answer"])
     db.add(log)
