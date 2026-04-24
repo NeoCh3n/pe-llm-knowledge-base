@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Send, Loader2, Search, Brain, Sparkles, GitBranchPlus, BrainCircuit, FileSearch } from 'lucide-react';
+import { Send, Loader2, Search, Brain, Sparkles, GitBranchPlus, BrainCircuit, FileSearch, CheckCircle, XCircle } from 'lucide-react';
 import { Message, Document } from '../App';
 import { MessageBubble } from './MessageBubble';
 import { DocumentSelector } from './DocumentSelector';
 import type { Deal } from '../lib/api';
+import { getLLMConfig } from '../lib/api';
 
 interface AnalysisPageProps {
   messages: Message[];
@@ -31,8 +32,18 @@ export function AnalysisPage({
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [selectedDealId, setSelectedDealId] = useState<string>('');
   const [showDocSelector, setShowDocSelector] = useState(false);
+  const [llmStatus, setLlmStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Check LLM connection status
+  useEffect(() => {
+    getLLMConfig()
+      .then((config) => {
+        setLlmStatus(config.llm_base_url ? 'connected' : 'disconnected');
+      })
+      .catch(() => setLlmStatus('disconnected'));
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -61,11 +72,21 @@ export function AnalysisPage({
   return (
     <div className="flex h-full">
       <div className="flex-1 flex flex-col">
-        <div className="px-6 py-4 border-b border-gray-200 bg-white">
+          <div className="px-6 py-4 border-b border-gray-200 bg-white">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-gray-900">Analysis & Precedent Retrieval</h2>
               <p className="text-sm text-gray-500 mt-1">Use document search for evidence extraction or investment analysis for precedent-aware synthesis.</p>
+            </div>
+
+            <div className="flex items-center gap-2 text-sm">
+              {llmStatus === 'checking' ? (
+                <><Loader2 size={16} className="animate-spin text-gray-400" /><span className="text-gray-500">Checking LLM...</span></>
+              ) : llmStatus === 'connected' ? (
+                <><CheckCircle size={16} className="text-green-600" /><span className="text-green-600">LLM Connected</span></>
+              ) : (
+                <><XCircle size={16} className="text-red-600" /><span className="text-red-600">LLM Not Connected</span></>
+              )}
             </div>
 
             <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg">
@@ -135,6 +156,26 @@ export function AnalysisPage({
                     ? 'Synthesize internal history with explicit citations and no unsupported recommendations.'
                     : 'Retrieve specific facts, tables, and evidence from selected documents.'}
                 </p>
+                <div className="flex items-center justify-center gap-2 text-sm">
+                  {llmStatus === 'checking' && (
+                    <>
+                      <Loader2 size={16} className="text-gray-400 animate-spin" />
+                      <span className="text-gray-500">Checking LLM connection...</span>
+                    </>
+                  )}
+                  {llmStatus === 'connected' && (
+                    <>
+                      <CheckCircle size={16} className="text-green-600" />
+                      <span className="text-green-600">LLM Connected</span>
+                    </>
+                  )}
+                  {llmStatus === 'disconnected' && (
+                    <>
+                      <XCircle size={16} className="text-red-600" />
+                      <span className="text-red-600">LLM Not Connected</span>
+                    </>
+                  )}
+                </div>
 
                 <div className="bg-white border border-gray-200 rounded-lg p-4 text-left">
                   <p className="text-sm text-gray-700 mb-3">Example queries:</p>
