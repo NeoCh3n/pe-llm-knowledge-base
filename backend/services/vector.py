@@ -39,38 +39,36 @@ class EmbeddingModel:
 
 class QdrantVectorStore:
     def __init__(self):
-        self.client = QdrantClient(
-            url=settings.qdrant_url, api_key=settings.qdrant_api_key
-        )
+        # Use embedded mode if qdrant_path is set, otherwise use server mode
+        if settings.qdrant_path:
+            import os
+
+            os.makedirs(settings.qdrant_path, exist_ok=True)
+            self.client = QdrantClient(path=settings.qdrant_path)
+        else:
+            self.client = QdrantClient(
+                url=settings.qdrant_url, api_key=settings.qdrant_api_key
+            )
         self.embedding = EmbeddingModel(settings.embedding_model_name)
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
-        """Create the Qdrant collection if it does not already exist.
-
-        Uses create_collection (non-destructive) rather than recreate_collection
-        so that a service restart never wipes existing vectors.
-        """
+        """Create the Qdrant collection if it does not already exist."""
         try:
-            self.client.http.collections_api.get_collection(
-                collection_name=settings.qdrant_collection
-            )
-            return  # already exists — nothing to do
+            self.client.get_collection(settings.qdrant_collection)
+            return  # already exists
         except Exception:
-            pass  # collection not found — create it below
+            pass
 
         try:
-            self.client.http.collections_api.create_collection(
+            self.client.create_collection(
                 collection_name=settings.qdrant_collection,
-                create_collection=models.CreateCollection(
-                    vectors=models.VectorParams(
-                        size=settings.embedding_dim,
-                        distance=models.Distance.COSINE,
-                    ),
+                vectors_config=models.VectorParams(
+                    size=settings.embedding_dim,
+                    distance=models.Distance.COSINE,
                 ),
             )
         except Exception as exc:
-            # Tolerate race condition where another worker created it first
             if "already exists" in str(exc).lower():
                 return
             raise
@@ -107,25 +105,23 @@ class QdrantVectorStore:
                 )
             )
 
-        # Use new API for upsert
-        points_list = models.PointsList(points=points)
-        self.client.http.points_api.upsert_points(
+        self.client.upsert(
             collection_name=settings.qdrant_collection,
+            points=points,
             wait=True,
-            point_insert_operations=points_list,
         )
 
     def search(
         self,
         query: str,
-        doc_ids: list[str] | None = None,
+        doc_ids: Optional[List[str]] = None,
         top_k: int = 5,
-        categories: list[str] | None = None,
-        deal_outcomes: list[str] | None = None,
+        categories: Optional[List[str]] = None,
+        deal_outcomes: Optional[List[str]] = None,
     ) -> List[ScoredChunk]:
         query_vector = self.embedding.embed_one(query)
 
-        must_conditions: list[models.FieldCondition] = []
+        must_conditions = []
         if doc_ids:
             must_conditions.append(
                 models.FieldCondition(
@@ -150,25 +146,15 @@ class QdrantVectorStore:
 
         search_filter = models.Filter(must=must_conditions) if must_conditions else None
 
-        # Build search request for new API
-        search_request = models.SearchRequest(
-            vector=models.NamedVector(
-                name="",
-                vector=query_vector,
-            ),
-            filter=search_filter,
-            limit=top_k,
-            with_payload=True,
-        )
-
-        # Call new API
-        response = self.client.http.search_api.search_points(
+        results = self.client.search(
             collection_name=settings.qdrant_collection,
-            search_request=search_request,
+            query_vector=query_vector,
+            query_filter=search_filter,
+            limit=top_k,
         )
 
         scored: List[ScoredChunk] = []
-        for hit in response.result or []:
+        for hit in results:
             payload = hit.payload or {}
             scored.append(
                 ScoredChunk(
@@ -188,19 +174,17 @@ class QdrantVectorStore:
         return scored
 
     def delete_document(self, document_id: str) -> None:
-        # Use FilterSelector directly (PointsSelector is a Union type)
-        selector = models.FilterSelector(
-            filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="document_id",
-                        match=models.MatchValue(value=document_id),
-                    )
-                ]
-            )
-        )
-        self.client.http.points_api.delete_points(
+        self.client.delete(
             collection_name=settings.qdrant_collection,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="document_id",
+                            match=models.MatchValue(value=document_id),
+                        )
+                    ]
+                )
+            ),
             wait=True,
-            points_selector=selector,
         )
