@@ -85,6 +85,7 @@ function App() {
     setErrorMessage(null);
 
     try {
+      let successCount = 0;
       for (const fileData of files) {
         const formData = new FormData();
         formData.append('file', fileData.file);
@@ -102,11 +103,23 @@ function App() {
         if (fileData.language) {
           formData.append('language', fileData.language);
         }
-        await uploadDocument(formData);
+        try {
+          await uploadDocument(formData);
+          successCount++;
+        } catch (fileError) {
+          console.error('Failed to upload file:', fileData.file.name, fileError);
+        }
       }
 
-      await refreshAll();
-      setCurrentPage('documents');
+      if (successCount > 0) {
+        await refreshAll();
+        setCurrentPage('documents');
+        if (successCount < files.length) {
+          setErrorMessage(`${successCount} of ${files.length} files uploaded successfully.`);
+        }
+      } else {
+        setErrorMessage('All uploads failed. Please check file types and try again.');
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Upload failed.');
     } finally {

@@ -620,6 +620,28 @@ def workflow_run(request: WorkflowRequest, db: Session = Depends(get_db)):
     }
 
 
+@app.get("/workflow/runs")
+def list_workflow_runs(deal_id: str | None = None, db: Session = Depends(get_db)):
+    """Return workflow run history, optionally filtered by deal_id."""
+    query = db.query(WorkflowRun)
+    if deal_id:
+        query = query.filter(WorkflowRun.deal_id == deal_id)
+    runs = query.order_by(WorkflowRun.created_at.desc()).all()
+    return [
+        {
+            "id": run.id,
+            "deal_id": run.deal_id,
+            "workflow_type": run.workflow_type,
+            "status": run.status,
+            "model_name": run.model_name,
+            "prompt_version": run.prompt_version,
+            "created_at": run.created_at,
+            "output": run.output_json,
+        }
+        for run in runs
+    ]
+
+
 class LLMConfigUpdate(BaseModel):
     llm_provider: str
     llm_model: str
