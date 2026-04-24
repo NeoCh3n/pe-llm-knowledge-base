@@ -1,5 +1,5 @@
 import React from 'react';
-import { Upload, MessageSquare, FolderOpen, TrendingUp, BriefcaseBusiness, Workflow } from 'lucide-react';
+import { Upload, MessageSquare, FolderOpen, TrendingUp, BriefcaseBusiness, Workflow, Settings } from 'lucide-react';
 import { Page, Document } from '../App';
 import type { Deal, WorkflowRun } from '../lib/api';
 
@@ -49,6 +49,12 @@ export function Navigation({ currentPage, onNavigate, documents, deals, workflow
             isActive={currentPage === 'workflow'}
             onClick={() => onNavigate('workflow')}
             badge={workflowRuns.length}
+          />
+          <NavItem
+            icon={Settings}
+            label="Settings"
+            isActive={currentPage === 'settings'}
+            onClick={() => onNavigate('settings')}
           />
         </div>
 

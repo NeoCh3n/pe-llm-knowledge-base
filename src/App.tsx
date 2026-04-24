@@ -4,7 +4,7 @@ import { UploadPage } from './components/UploadPage';
 import { AnalysisPage } from './components/AnalysisPage';
 import { DocumentsPage } from './components/DocumentsPage';
 import { DealsPage } from './components/DealsPage';
-import { WorkflowPage } from './components/WorkflowPage';
+import { SettingsPage } from './components/SettingsPage';
 import { MobileResponsiveNotice } from './components/MobileResponsiveNotice';
 import {
   createDeal,
@@ -25,7 +25,7 @@ import {
 export type Document = DocumentRecord;
 export type Source = SourceRecord;
 export type { Deal, WorkflowRun };
-export type Page = 'upload' | 'analysis' | 'documents' | 'deals' | 'workflow';
+export type Page = 'upload' | 'analysis' | 'documents' | 'deals' | 'workflow' | 'settings';
 
 export interface Message {
   id: string;
@@ -298,6 +298,8 @@ function App() {
             onNavigateToDeal={handleNavigateToDeal}
           />
         )}
+
+        {currentPage === 'settings' && <SettingsPage />}
       </div>
       </div>
     </>

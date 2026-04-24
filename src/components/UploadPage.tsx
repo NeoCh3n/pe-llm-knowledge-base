@@ -62,13 +62,20 @@ export function UploadPage({ onUpload, onCreateDeal, deals, isLoading }: UploadP
   );
 
   const addFiles = (files: File[]) => {
+    console.log('addFiles called with:', files.map(f => ({ name: f.name, type: f.type, size: f.size })));
     const validFiles = files.filter(
       (file) =>
         file.type === 'application/pdf' ||
         file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-        file.name.endsWith('.pdf') ||
-        file.name.endsWith('.docx')
+        file.name.toLowerCase().endsWith('.pdf') ||
+        file.name.toLowerCase().endsWith('.docx')
     );
+
+    console.log('Valid files:', validFiles.map(f => f.name));
+
+    if (validFiles.length === 0 && files.length > 0) {
+      console.warn('No valid files selected. File types:', files.map(f => `${f.name}: ${f.type}`));
+    }
 
     const newPendingFiles: PendingFile[] = validFiles.map((file) => ({
       id: `${Date.now()}-${Math.random()}`,
@@ -150,7 +157,9 @@ export function UploadPage({ onUpload, onCreateDeal, deals, isLoading }: UploadP
               onDrop={(e) => {
                 e.preventDefault();
                 setIsDragging(false);
-                addFiles(Array.from(e.dataTransfer.files));
+                const files = Array.from(e.dataTransfer.files);
+                console.log('Dropped files:', files.map(f => ({ name: f.name, type: f.type, size: f.size })));
+                addFiles(files);
               }}
               className={`
                 border-2 border-dashed rounded-xl p-12 text-center transition-all mb-8
@@ -163,9 +172,9 @@ export function UploadPage({ onUpload, onCreateDeal, deals, isLoading }: UploadP
               <input
                 type="file"
                 multiple
-                accept=".pdf,.docx"
+                accept="application/pdf,.pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 onChange={(e) => {
-                  if (e.target.files) {
+                  if (e.target.files && e.target.files.length > 0) {
                     addFiles(Array.from(e.target.files));
                     e.target.value = '';
                   }
