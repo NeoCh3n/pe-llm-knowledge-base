@@ -211,3 +211,7 @@ node_modules/
 package-lock.json
 dist/
 build/
+.DS_Store
+data/
+workspace/
+.DS_Store
