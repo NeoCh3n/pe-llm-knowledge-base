@@ -4,6 +4,7 @@ import { UploadPage } from './components/UploadPage';
 import { AnalysisPage } from './components/AnalysisPage';
 import { DocumentsPage } from './components/DocumentsPage';
 import { DealsPage } from './components/DealsPage';
+import { WorkflowPage } from './components/WorkflowPage';
 import { SettingsPage } from './components/SettingsPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { MobileResponsiveNotice } from './components/MobileResponsiveNotice';
