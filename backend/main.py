@@ -37,11 +37,16 @@ from backend.services.rag import generate_answer
 from backend.services.vector import QdrantVectorStore
 from backend.services.workspace import WorkspaceManager
 from backend.services.workflow import run_ic_workflow
+from backend.services.analytics import DuckDBAnalytics, get_duckdb_analytics
+from backend.api import analytics as analytics_api
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 app = FastAPI(title="PE Local RAG API", version="0.1.0")
+
+# Include analytics router
+app.include_router(analytics_api.router)
 
 # ---------------------------------------------------------------------------
 # CORS — local dev only; add your deploy origin before any cloud deployment
@@ -260,7 +265,9 @@ def _ingest_document(
     db = SessionLocal()
     try:
         # Parse
-        chunks = parse_and_chunk(file_location)
+        parse_result = parse_and_chunk(file_location)
+        chunks = parse_result.chunks
+        tables = parse_result.tables
 
         # Write parsed artifacts
         parsed_artifacts = get_workspace_manager().write_parsed_artifacts(
@@ -281,6 +288,24 @@ def _ingest_document(
         _store_chunks(db, document_id, chunks)
         db.commit()
 
+        # Extract and store tables to DuckDB
+        if tables:
+            try:
+                from backend.services.analytics import get_duckdb_analytics
+                analytics = get_duckdb_analytics()
+                for idx, table in enumerate(tables):
+                    analytics.add_extracted_table({
+                        "table_id": f"{document_id}_table_{idx}",
+                        "document_id": document_id,
+                        "filename": filename,
+                        "page_number": table.page_number,
+                        "table_content": table.content,
+                        "table_type": table.table_type,
+                    })
+                logger.info("Stored %d tables in DuckDB for document_id=%s", len(tables), document_id)
+            except Exception as table_exc:
+                logger.warning("Failed to store tables in DuckDB for document_id=%s: %s", document_id, table_exc)
+
         # Embed + upsert to Qdrant — if this fails, document stays "processing" → "failed"
         get_vector_store().upsert_chunks(
             chunks,
@@ -299,8 +324,18 @@ def _ingest_document(
             doc.status = "ready"
             db.commit()
 
+        # Sync to DuckDB analytics (incremental sync for this document only)
+        try:
+            from backend.services.analytics import get_duckdb_analytics
+            analytics = get_duckdb_analytics()
+            analytics.sync_from_sqlite(db, document_id=document_id)
+            logger.info("DuckDB sync complete for document_id=%s", document_id)
+        except Exception as sync_exc:
+            logger.warning("DuckDB sync failed for document_id=%s: %s", document_id, sync_exc)
+            # Don't fail ingestion if DuckDB sync fails
+
         logger.info(
-            "Ingestion complete: document_id=%s chunks=%d", document_id, len(chunks)
+            "Ingestion complete: document_id=%s chunks=%d tables=%d", document_id, len(chunks), len(tables)
         )
 
     except Exception as exc:
@@ -413,6 +448,16 @@ def delete_document(document_id: str, db: Session = Depends(get_db)):
     )
     db.delete(document)
     db.commit()
+
+    # Also delete from DuckDB analytics
+    try:
+        from backend.services.analytics import get_duckdb_analytics
+        analytics = get_duckdb_analytics()
+        analytics.delete_document(document_id)
+        logger.info("DuckDB delete complete for document_id=%s", document_id)
+    except Exception as duck_exc:
+        logger.warning("DuckDB delete failed for document_id=%s: %s", document_id, duck_exc)
+
     return {"status": "deleted", "document_id": document_id}
 
 
@@ -539,6 +584,7 @@ def chat(request: ChatRequest, db: Session = Depends(get_db)):
             doc_ids=request.doc_ids,
             categories=categories,
             deal_outcomes=deal_outcomes,
+            top_k=3,  # Reduced from default 5 to avoid context window overflow
         )
     except Exception as exc:
         import traceback

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 from backend.config import get_settings
 
@@ -16,20 +16,33 @@ class ParsedChunk:
     section: str | None = None
 
 
+@dataclass
+class ParsedTable:
+    """Represents an extracted table from a document."""
+    content: str
+    page_number: int
+    table_type: str | None = None  # e.g., "financial", "cap_table", "other"
+
+
+class ParseResult:
+    """Result of parsing a document, including chunks and tables."""
+    def __init__(self):
+        self.chunks: List[ParsedChunk] = []
+        self.tables: List[ParsedTable] = []
+
+
 # ---------------------------------------------------------------------------
 # Structured element export — preserves real page numbers via docling provenance
 # ---------------------------------------------------------------------------
 
-def _export_elements(file_path: Path) -> List[tuple[int, str | None, str]]:
+def _export_elements(file_path: Path) -> Tuple[List[Tuple[int, str | None, str]], List[ParsedTable]]:
     """
     Use docling's structured document model to extract elements with their
     real page numbers.
 
-    Returns a list of (page_number, section_header, markdown_content) tuples,
-    one per logical document element (text block, heading, table, list item).
-
-    Tables are exported as Markdown table strings and later kept as atomic
-    chunks by _chunk_elements().
+    Returns:
+        - List of (page_number, section_header, markdown_content) tuples
+        - List of ParsedTable objects for extracted tables
     """
     try:
         from docling.document_converter import DocumentConverter
@@ -46,7 +59,8 @@ def _export_elements(file_path: Path) -> List[tuple[int, str | None, str]]:
     if doc is None:
         raise RuntimeError("docling returned no document for file: %s" % file_path)
 
-    elements: List[tuple[int, str | None, str]] = []
+    elements: List[Tuple[int, str | None, str]] = []
+    tables: List[ParsedTable] = []
     current_section: str | None = None
 
     for item, _level in doc.iterate_items():
@@ -75,9 +89,19 @@ def _export_elements(file_path: Path) -> List[tuple[int, str | None, str]]:
         if "section_header" in label or label in ("title",):
             current_section = content.lstrip("#").strip()
 
+        # --- detect and extract tables ------------------------------------
+        if _is_table_content(content):
+            # Infer table type from content/section
+            table_type = _infer_table_type(content, current_section)
+            tables.append(ParsedTable(
+                content=content,
+                page_number=page_no,
+                table_type=table_type
+            ))
+
         elements.append((page_no, current_section, content))
 
-    return elements
+    return elements, tables
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +113,47 @@ def _is_table_content(content: str) -> bool:
     """Return True if content looks like a Markdown table (starts with '|')."""
     first_line = content.lstrip().split("\n", 1)[0]
     return first_line.startswith("|")
+
+
+def _infer_table_type(content: str, section: str | None) -> str | None:
+    """Infer the type of table from its content and section context."""
+    content_lower = content.lower()
+    section_lower = (section or "").lower()
+
+    # Financial tables
+    financial_keywords = ['revenue', 'ebitda', 'profit', 'loss', 'income', 'balance', 'cash flow',
+                         'financial', 'million', 'billion', '$', '%', 'margin', 'cagr', 'growth']
+    if any(kw in content_lower for kw in financial_keywords):
+        return 'financial'
+
+    # Cap table / ownership
+    cap_keywords = ['shareholder', 'ownership', 'shares', 'equity', 'cap table', 'founder',
+                   'investor', 'stake', 'percentage', 'voting']
+    if any(kw in content_lower for kw in cap_keywords):
+        return 'cap_table'
+
+    # Team / people
+    team_keywords = ['founder', 'ceo', 'cto', 'cfo', 'executive', 'team', 'management',
+                    'director', 'vp', 'head of']
+    if any(kw in content_lower for kw in team_keywords):
+        return 'team'
+
+    # Market / competitive
+    market_keywords = ['market', 'competitor', 'competitive', 'landscape', 'comparison',
+                      'benchmark', 'peer', 'industry']
+    if any(kw in content_lower for kw in market_keywords):
+        return 'market'
+
+    # Check section context
+    if section:
+        if any(kw in section_lower for kw in ['financial', 'revenue', 'ebitda', 'profit']):
+            return 'financial'
+        if any(kw in section_lower for kw in ['cap table', 'ownership', 'shareholder']):
+            return 'cap_table'
+        if any(kw in section_lower for kw in ['team', 'management', 'founder']):
+            return 'team'
+
+    return 'other'
 
 
 def _chunk_elements(
@@ -181,19 +246,18 @@ def _chunk_elements(
 # Public API
 # ---------------------------------------------------------------------------
 
-def parse_and_chunk(file_path: str | Path) -> List[ParsedChunk]:
+def parse_and_chunk(file_path: str | Path) -> ParseResult:
     """
     Parse a document and split it into RAG-friendly chunks with real page numbers.
 
     Uses docling's structured element iteration so that page provenance is
-    preserved end-to-end. Tables are kept in single chunks. Section headers
-    are tracked as metadata.
+    preserved end-to-end. Tables are kept in single chunks and also extracted
+    separately for analytics. Section headers are tracked as metadata.
 
-    Returns a list of ParsedChunk objects ready for vector embedding and
-    SQLite storage.
+    Returns a ParseResult containing chunks and extracted tables.
     """
     path = Path(file_path)
-    elements = _export_elements(path)
+    elements, tables = _export_elements(path)
     chunks = _chunk_elements(
         elements,
         max_len=settings.chunk_size,
@@ -205,5 +269,8 @@ def parse_and_chunk(file_path: str | Path) -> List[ParsedChunk]:
         chunk.source = path.name
         chunk.chunk_index = idx
 
-    return chunks
+    result = ParseResult()
+    result.chunks = chunks
+    result.tables = tables
+    return result
 

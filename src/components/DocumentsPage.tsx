@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { FileText, Trash2, RefreshCw, Filter, Calendar, Tag, X } from 'lucide-react';
+import { FileText, Trash2, RefreshCw, Filter, Calendar, Tag, X, Loader2, AlertCircle } from 'lucide-react';
 import { Document } from '../App';
 import type { Deal } from '../lib/api';
 
@@ -7,14 +7,17 @@ interface DocumentsPageProps {
   documents: Document[];
   deals: Deal[];
   onDelete: (docId: string) => Promise<void>;
+  onDeleteBatch: (docIds: string[]) => Promise<void>;
   onRefresh: () => Promise<void>;
   dealIdFilter?: string | null;
   onClearDealFilter?: () => void;
 }
 
-export function DocumentsPage({ documents, deals, onDelete, onRefresh, dealIdFilter, onClearDealFilter }: DocumentsPageProps) {
+export function DocumentsPage({ documents, deals, onDelete, onDeleteBatch, onRefresh, dealIdFilter, onClearDealFilter }: DocumentsPageProps) {
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false);
 
   const filteredDocuments = useMemo(
     () =>
@@ -31,6 +34,37 @@ export function DocumentsPage({ documents, deals, onDelete, onRefresh, dealIdFil
   );
 
   const activeDeal = dealIdFilter ? deals.find(d => d.id === dealIdFilter) : null;
+
+  const handleSelectDoc = (docId: string, selected: boolean) => {
+    const newSet = new Set(selectedDocIds);
+    if (selected) {
+      newSet.add(docId);
+    } else {
+      newSet.delete(docId);
+    }
+    setSelectedDocIds(newSet);
+  };
+
+  const handleSelectAll = (selected: boolean) => {
+    if (selected) {
+      setSelectedDocIds(new Set(filteredDocuments.map(d => d.id)));
+    } else {
+      setSelectedDocIds(new Set());
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedDocIds.size === 0) return;
+    const count = selectedDocIds.size;
+    if (!confirm(`Are you sure you want to delete ${count} document${count > 1 ? 's' : ''}?`)) return;
+    setIsBatchDeleting(true);
+    try {
+      await onDeleteBatch(Array.from(selectedDocIds));
+      setSelectedDocIds(new Set());
+    } finally {
+      setIsBatchDeleting(false);
+    }
+  };
 
   const categoryStats = {
     all: documents.length,
@@ -49,10 +83,22 @@ export function DocumentsPage({ documents, deals, onDelete, onRefresh, dealIdFil
             <h1 className="text-gray-900 mb-2">Document Library</h1>
             <p className="text-gray-600">Search, filter, and prune the evidence base backing the institutional memory system.</p>
           </div>
-          <button onClick={onRefresh} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors">
-            <RefreshCw size={18} />
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            {selectedDocIds.size > 0 && (
+              <button
+                onClick={handleBatchDelete}
+                disabled={isBatchDeleting}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                <Trash2 size={18} />
+                Delete {selectedDocIds.size} selected
+              </button>
+            )}
+            <button onClick={onRefresh} className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors">
+              <RefreshCw size={18} />
+              Refresh
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr,260px] gap-6 mb-6">
@@ -109,8 +155,27 @@ export function DocumentsPage({ documents, deals, onDelete, onRefresh, dealIdFil
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4">
+            {filteredDocuments.length > 0 && (
+              <div className="flex items-center gap-3 px-2">
+                <input
+                  type="checkbox"
+                  checked={selectedDocIds.size === filteredDocuments.length && filteredDocuments.length > 0}
+                  onChange={(e) => handleSelectAll(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-600">
+                  {selectedDocIds.size > 0 ? `${selectedDocIds.size} selected` : 'Select all'}
+                </span>
+              </div>
+            )}
             {filteredDocuments.map((doc) => (
-              <DocumentCard key={doc.id} document={doc} onDelete={onDelete} />
+              <DocumentCard
+                key={doc.id}
+                document={doc}
+                onDelete={onDelete}
+                isSelected={selectedDocIds.has(doc.id)}
+                onSelect={(selected) => handleSelectDoc(doc.id, selected)}
+              />
             ))}
           </div>
         )}
@@ -119,7 +184,17 @@ export function DocumentsPage({ documents, deals, onDelete, onRefresh, dealIdFil
   );
 }
 
-function DocumentCard({ document, onDelete }: { document: Document; onDelete: (docId: string) => Promise<void> }) {
+function DocumentCard({
+  document,
+  onDelete,
+  isSelected,
+  onSelect,
+}: {
+  document: Document;
+  onDelete: (docId: string) => Promise<void>;
+  isSelected: boolean;
+  onSelect: (selected: boolean) => void;
+}) {
   const [isDeleting, setIsDeleting] = useState(false);
   const uploadDate = new Date(document.upload_timestamp);
   const categoryColors = {
@@ -130,12 +205,30 @@ function DocumentCard({ document, onDelete }: { document: Document; onDelete: (d
     other: 'bg-gray-100 text-gray-700',
   };
 
+  const statusConfig = {
+    processing: { icon: Loader2, color: 'text-yellow-600', bg: 'bg-yellow-50', label: 'Processing' },
+    ready: { icon: FileText, color: 'text-blue-600', bg: 'bg-blue-100', label: 'Ready' },
+    failed: { icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-50', label: 'Failed' },
+  };
+  const status = document.status || 'ready';
+  const statusInfo = statusConfig[status as keyof typeof statusConfig] || statusConfig.ready;
+  const StatusIcon = statusInfo.icon;
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-5 hover:shadow-md transition-shadow">
       <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 flex items-center pt-1">
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={(e) => onSelect(e.target.checked)}
+            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+          />
+        </div>
+
         <div className="flex-shrink-0">
-          <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-            <FileText className="text-blue-600" size={24} />
+          <div className={`w-12 h-12 ${statusInfo.bg} rounded-lg flex items-center justify-center`}>
+            <StatusIcon className={statusInfo.color} size={24} />
           </div>
         </div>
 
@@ -166,7 +259,14 @@ function DocumentCard({ document, onDelete }: { document: Document; onDelete: (d
             </div>
             <span className={`px-2.5 py-1 text-xs rounded ${categoryColors[document.category]}`}>{document.category.replace('_', ' ')}</span>
             {document.deal_outcome && <span className="px-2.5 py-1 text-xs rounded bg-gray-100 text-gray-700">{document.deal_outcome}</span>}
+            <span className={`px-2.5 py-1 text-xs rounded ${statusInfo.bg} ${statusInfo.color}`}>
+              {statusInfo.label}
+            </span>
           </div>
+
+          {document.status === 'failed' && document.status_error && (
+            <div className="text-xs text-red-600 mb-2">{document.status_error}</div>
+          )}
 
           {document.tags.length > 0 && (
             <div className="flex items-center gap-2">

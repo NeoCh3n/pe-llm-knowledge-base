@@ -168,6 +168,18 @@ function App() {
     }
   };
 
+  const handleDeleteBatch = async (docIds: string[]) => {
+    setErrorMessage(null);
+    try {
+      for (const docId of docIds) {
+        await deleteDocument(docId);
+      }
+      setDocuments((prev) => prev.filter((doc) => !docIds.includes(doc.id)));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Batch delete failed.');
+    }
+  };
+
   const handleSendMessage = async (
     query: string,
     analysisType: 'document_search' | 'investment_analysis',
@@ -197,10 +209,13 @@ function App() {
       };
       const data = (await postChat(payload)) as ChatResponse;
 
+      // Handle empty answer from LLM
+      const answerContent = data.answer?.trim() || 'No response generated from LLM. Please check your LLM configuration.';
+
       const assistantMessage: Message = {
         id: `${Date.now()}-assistant`,
         type: 'assistant',
-        content: data.answer,
+        content: answerContent,
         sources: data.sources,
         timestamp: new Date().toISOString(),
         analysisType,
@@ -294,6 +309,7 @@ function App() {
             documents={documents}
             deals={deals}
             onDelete={handleDeleteDocument}
+            onDeleteBatch={handleDeleteBatch}
             onRefresh={refreshAll}
             dealIdFilter={selectedDealIdFilter}
             onClearDealFilter={() => setSelectedDealIdFilter(null)}

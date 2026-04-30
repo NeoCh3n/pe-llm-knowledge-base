@@ -76,7 +76,11 @@ export function AnalysisPage({
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-gray-900">Analysis & Precedent Retrieval</h2>
-              <p className="text-sm text-gray-500 mt-1">Use document search for evidence extraction or investment analysis for precedent-aware synthesis.</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {analysisType === 'investment_analysis'
+                  ? 'Searches historical deals only. Switch to Document Search to query all document categories.'
+                  : 'Use document search for evidence extraction or investment analysis for precedent-aware synthesis.'}
+              </p>
             </div>
 
             <div className="flex items-center gap-2 text-sm">

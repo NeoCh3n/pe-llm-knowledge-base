@@ -95,7 +95,7 @@ def run_ic_workflow(
         doc_ids=doc_ids,
         categories=categories,
         deal_outcomes=deal_outcomes,
-        top_k=16,
+        top_k=8,  # Reduced from 16 to avoid context window overflow
     )
     precedent_summary = summarize_precedents(precedents)
 
